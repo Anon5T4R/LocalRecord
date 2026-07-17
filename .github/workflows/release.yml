@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            rust-target: x86_64-pc-windows-msvc
+            bundles: nsis
+          - platform: ubuntu-22.04
+            rust-target: x86_64-unknown-linux-gnu
+            bundles: appimage
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # xz-utils: o tarball do ffmpeg estático do Linux é .tar.xz.
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            curl wget file xz-utils
+
+      - name: Install JS deps
+        run: npm ci
+
+      # O fetch tem que vir ANTES do tauri-action: o bundler copia
+      # binaries/ffmpeg/* como resource na hora do build.
+      - name: Baixar runtime de mídia (ffmpeg) — Windows
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1
+
+      - name: Baixar runtime de mídia (ffmpeg) — Linux
+        if: matrix.platform == 'ubuntu-22.04'
+        run: bash scripts/fetch-ffmpeg.sh
+
+      - name: Cargo.lock em dia (--locked)
+        working-directory: src-tauri
+        run: cargo fetch --locked
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "LocalRecord ${{ github.ref_name }}"
+          releaseBody: |
+            ## LocalRecord ${{ github.ref_name }}
+
+            Estúdio de captura de tela 100% offline da suíte Local (ffmpeg embutido):
+            grave a tela com a câmera sobreposta no canto e o microfone, e **anote
+            AO VIVO** por cima — a plateia presencial vê a caneta na hora e a
+            anotação já entra no vídeo. Gravação em MKV (recuperável) com remux
+            pra MP4 no fim. Sem live, sem nuvem, sem conta.
+
+            ### Downloads
+            - **Windows — Instalador:** `*-setup.exe`
+            - **Linux — AppImage:** `*.AppImage` (dê permissão de execução e rode)
+
+            > O ffmpeg (build GPL) vai embutido no instalador — nada pra configurar.
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: false
+          args: --bundles ${{ matrix.bundles }}

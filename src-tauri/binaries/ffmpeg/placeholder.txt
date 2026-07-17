@@ -1,0 +1,3 @@
+Os binários do ffmpeg (ffmpeg + ffprobe) entram aqui via scripts/fetch-ffmpeg.ps1 (Windows)
+ou scripts/fetch-ffmpeg.sh (Linux). Este placeholder existe porque o glob de resources do
+tauri.conf.json não pode ficar vazio (lição da suíte).

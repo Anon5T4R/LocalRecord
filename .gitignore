@@ -1,0 +1,17 @@
+node_modules
+dist
+dist-ssr
+*.local
+
+# Runtime ffmpeg baixado pelos scripts (scripts/fetch-ffmpeg.ps1/.sh) — nunca versionar.
+src-tauri/binaries/ffmpeg/*
+!src-tauri/binaries/ffmpeg/placeholder.txt
+
+# editor / OS
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea
+
+# Claude Code
+.claude

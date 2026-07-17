@@ -1,0 +1,150 @@
+/* Overlay de anotação. Regra número um deste arquivo: NADA pode pintar um fundo.
+   A janela é `transparent: true` e cobre o monitor inteiro — um `background`
+   opaco aqui (inclusive o branco que o navegador põe por padrão em `body`)
+   taparia a tela do usuário e entraria no vídeo por cima de tudo. */
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  /* A janela não tem decoração: sem isto, arrastar por cima do canvas viraria
+     seleção de texto azul na tela toda. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.annot-root {
+  position: fixed;
+  inset: 0;
+  /* Cinto e suspensório do click-through: quem MANDA é o
+     `set_ignore_cursor_events` do Rust (propriedade da janela no SO), mas se um
+     evento escapar com a caneta desligada, ele não vira risco na tela. */
+  pointer-events: none;
+}
+
+.annot-root.pen {
+  pointer-events: auto;
+}
+
+.annot-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+.annot-root.pen .annot-canvas {
+  cursor: crosshair;
+}
+
+/* ---- Barrinha de ferramentas ---- */
+
+.annot-bar {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 7px;
+  border-radius: 10px;
+  /* Escura e fixa (não segue o tema do app): ela flutua sobre a tela do
+     USUÁRIO, não sobre a janela do LocalRecord — o contraste precisa valer
+     tanto num IDE preto quanto num Word branco. */
+  background: rgba(22, 26, 34, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  color: #e7edf5;
+  font: 13px/1 system-ui, sans-serif;
+  /* Compacta de propósito: ela FICA no vídeo enquanto a caneta está ligada. */
+  backdrop-filter: blur(8px);
+}
+
+.annot-grip {
+  cursor: grab;
+  padding: 0 4px;
+  color: #8695a8;
+  font-size: 15px;
+}
+
+.annot-grip:active {
+  cursor: grabbing;
+}
+
+.annot-bar button {
+  min-width: 26px;
+  height: 26px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: #e7edf5;
+  font: inherit;
+  cursor: pointer;
+}
+
+.annot-bar button:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.annot-bar button.on {
+  background: #8b5cf6;
+  color: #fff;
+}
+
+.annot-sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 2px;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.annot-color {
+  min-width: 18px !important;
+  width: 18px;
+  height: 18px !important;
+  border-radius: 50% !important;
+  border: 2px solid transparent !important;
+}
+
+.annot-color.on {
+  border-color: #fff !important;
+  /* O anel de fora garante o "selecionado" mesmo na bolinha branca, onde a
+     borda branca sumiria. */
+  box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.95);
+}
+
+.annot-w span {
+  display: block;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.annot-off:hover {
+  background: rgba(248, 113, 113, 0.25) !important;
+  color: #fca5a5;
+}
+
+/* ---- Texto ---- */
+
+.annot-text-input {
+  position: absolute;
+  min-width: 160px;
+  padding: 3px 6px;
+  border: 1px dashed rgba(255, 255, 255, 0.5);
+  border-radius: 6px;
+  background: rgba(22, 26, 34, 0.85);
+  font: 600 22px/1.3 system-ui, sans-serif;
+  outline: none;
+}
+
+.annot-text-input::placeholder {
+  color: rgba(255, 255, 255, 0.4);
+  font-weight: 400;
+  font-size: 15px;
+}

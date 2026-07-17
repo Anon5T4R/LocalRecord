@@ -1,0 +1,29 @@
+[package]
+name = "localrecord"
+version = "0.1.0"
+description = "LocalRecord — estúdio de captura de tela 100% offline da suíte Local"
+authors = ["Taylor"]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/Anon5T4R/LocalRecord"
+
+[lib]
+# O sufixo `_lib` evita conflito entre o nome da lib e o do binário no Windows
+# (https://github.com/rust-lang/cargo/issues/8519).
+name = "localrecord_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-single-instance = "2"
+# Atalhos do overlay de anotação (Ctrl+Shift+D liga a caneta, Ctrl+Shift+X
+# limpa). Tem que ser GLOBAL: quando o usuário está anotando, o foco está no
+# app que ele demonstra — atalho de janela nunca chegaria aqui.
+tauri-plugin-global-shortcut = "2"
