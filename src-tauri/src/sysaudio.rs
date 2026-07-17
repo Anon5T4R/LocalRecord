@@ -90,7 +90,12 @@ pub struct AudioLevel {
 pub type LevelSink = std::sync::Arc<dyn Fn(AudioLevel) + Send + Sync>;
 
 /// O sink de produção: joga o nível na ponte de eventos do Tauri.
-#[cfg(windows)]
+///
+/// NÃO é `#[cfg(windows)]`: é chamado por `sys_audio_start`/`restart_feed`, que
+/// são código COMPARTILHADO (compilam nas duas plataformas). No Linux o
+/// `SysAudioFeed::start` é o stub que devolve PENDENTE, mas o `emit_sink` ainda
+/// precisa existir pra compilar a chamada. Gateá-lo quebrava o build do AppImage
+/// (E0425: cannot find function `emit_sink`) — e só o CI do Linux pegava.
 fn emit_sink(app: &tauri::AppHandle) -> LevelSink {
     use tauri::Emitter;
     let app = app.clone();
