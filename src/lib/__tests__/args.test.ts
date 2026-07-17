@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildAudio,
   buildRecordArgs,
   buildRemuxArgs,
   expandPattern,
   type RecordSpec,
+  type SysAudioSpec,
 } from "../args";
 
 /** Base "só tela", o caso mais simples. Cada teste muda o que interessa. */
@@ -13,8 +15,17 @@ const base: RecordSpec = {
   fps: 30,
   camera: null,
   mic: null,
+  sysAudio: null,
+  audioTracks: "mixed",
   encoder: "libx264",
   outPath: "C:/v/take.mkv",
+};
+
+/** O que o `sys_audio_start` do Rust devolve: o cano e o formato REAL da placa. */
+const SYS: SysAudioSpec = {
+  pipePath: "\\\\.\\pipe\\localrecord-sysaudio-4242",
+  sampleRate: 48000,
+  channels: 2,
 };
 
 describe("buildRecordArgs", () => {
@@ -123,6 +134,91 @@ describe("buildRecordArgs", () => {
     expect(pct(0)).toBe("0.0500");
     expect(pct(999)).toBe("0.6000");
     expect(pct(25)).toBe("0.2500");
+  });
+
+  it("áudio do sistema entra por named pipe, no formato que a placa deu", () => {
+    const args = buildRecordArgs({ ...base, sysAudio: SYS });
+    expect(args).toEqual([
+      "-f", "lavfi", "-i", "ddagrab=output_idx=0:framerate=30",
+      "-f", "s16le", "-ar", "48000", "-ac", "2", "-thread_queue_size", "1024",
+      "-i", "\\\\.\\pipe\\localrecord-sysaudio-4242",
+      "-filter_complex", "[0:v]hwdownload,format=bgra[scr];[scr]format=yuv420p[v]",
+      "-map", "[v]",
+      "-map", "1:a", "-c:a", "aac", "-b:a", "160k",
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+      "-f", "matroska", "C:/v/take.mkv",
+    ]);
+  });
+
+  it("o PCM NUNCA vai pro stdin — é lá que mora o `q` do stop gracioso", () => {
+    // A regressão que mataria o app: ocupar o stdin com áudio faria TODO take
+    // terminar em kill(), ou seja, sem trailer. O canal do áudio é outro.
+    const line = buildRecordArgs({ ...base, mic: "Mic", sysAudio: SYS }).join(" ");
+    expect(line).toContain("-i \\\\.\\pipe\\localrecord-sysaudio-4242");
+    expect(line).not.toContain("-i pipe:");
+    expect(line).not.toContain("-i -");
+  });
+
+  it("o formato do pipe acompanha a placa (não é 48k cravado)", () => {
+    // Placa a 44,1k mono existe. Cravar 48k/estéreo aqui entregaria áudio em
+    // câmera lenta — o modo de falha mais bobo e mais fácil de não perceber.
+    const line = buildRecordArgs({
+      ...base,
+      sysAudio: { ...SYS, sampleRate: 44100, channels: 1 },
+    }).join(" ");
+    expect(line).toContain("-f s16le -ar 44100 -ac 1");
+  });
+
+  it("mic + sistema mixados: uma faixa só, e nenhum dos dois perde volume", () => {
+    const args = buildRecordArgs({ ...base, mic: "Mic", sysAudio: SYS });
+    const line = args.join(" ");
+    // mic = entrada 1, pipe = entrada 2 (sem câmera).
+    expect(line).toContain("-rtbufsize 128M -f dshow -i audio=Mic");
+    expect(line).toContain(
+      "[1:a][2:a]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[a]",
+    );
+    expect(line).toContain("-map [v] -map [a] -c:a aac -b:a 160k");
+    // normalize=0 é o que impede o amix de dividir cada fonte por 2 (ligar o
+    // áudio do sistema derrubaria o mic pela metade e a culpa cairia no mic).
+    expect(line).not.toContain("normalize=1");
+  });
+
+  it("faixas separadas: uma trilha por fonte, com nome", () => {
+    const line = buildRecordArgs({
+      ...base,
+      mic: "Mic",
+      sysAudio: SYS,
+      audioTracks: "separate",
+    }).join(" ");
+    expect(line).toContain("-map [v] -map 1:a -map 2:a");
+    expect(line).toContain("-metadata:s:a:0 title=Microfone");
+    expect(line).toContain("-metadata:s:a:1 title=Áudio do sistema");
+    expect(line).not.toContain("amix");
+  });
+
+  it("tela + câmera + mic + sistema: cada entrada no seu índice", () => {
+    // O erro clássico: índice cravado. Com câmera, o mic vira 2 e o pipe 3.
+    const line = buildRecordArgs({
+      ...base,
+      camera: { id: "Cam", corner: "br", sizePct: 25 },
+      mic: "Mic",
+      sysAudio: SYS,
+    }).join(" ");
+    expect(line).toContain("[2:a][3:a]amix=");
+  });
+
+  it("faixa separada só existe com as duas fontes (uma fonte é uma faixa)", () => {
+    // "Separado" com uma fonte só não quer dizer nada — e não pode virar um
+    // -map duplicado da mesma entrada.
+    expect(buildAudio(1, -1, "separate")).toEqual({ chain: "", maps: ["-map", "1:a"] });
+    expect(buildAudio(-1, 2, "separate")).toEqual({ chain: "", maps: ["-map", "2:a"] });
+    expect(buildAudio(-1, -1, "mixed")).toEqual({ chain: "", maps: [] });
+  });
+
+  it("sem áudio nenhum, não sobra nem codec de áudio na linha", () => {
+    const line = buildRecordArgs(base).join(" ");
+    expect(line).not.toContain("-c:a");
+    expect(line).not.toContain("s16le");
   });
 
   it("nenhuma gravação passa -nostdin (é por lá que o stop gracioso fala)", () => {

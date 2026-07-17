@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import AudioMeter from "./components/AudioMeter";
 import Preview from "./components/Preview";
 import SettingsModal from "./components/SettingsModal";
 import Toasts from "./components/Toasts";
@@ -9,11 +10,13 @@ import {
   buildRecordArgs,
   buildRemuxArgs,
   expandPattern,
+  type AudioTracks,
   type Corner,
   type Encoder,
   type Grabber,
   type Platform,
   type RecordSpec,
+  type SysAudioSpec,
 } from "./lib/args";
 import { t } from "./lib/i18n";
 import {
@@ -23,6 +26,7 @@ import {
   PRIMARY_SCREEN,
   type Device,
   type DeviceList,
+  type SysAudioInfo,
 } from "./lib/sources";
 import { useUi } from "./state/ui";
 
@@ -30,7 +34,7 @@ import { useUi } from "./state/ui";
 // renderiza vazia em vez de estourar no invoke.
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
-const EMPTY: DeviceList = { screens: [], cameras: [], microphones: [] };
+const EMPTY: DeviceList = { screens: [], cameras: [], microphones: [], outputs: [] };
 
 /** Fases da gravação. `stopping` existe porque fechar o contêiner leva um
  *  tempo real (o ffmpeg escreve o trailer) e o botão não pode piscar "Gravar"
@@ -48,6 +52,14 @@ interface RecordDone {
   path: string;
   graceful: boolean;
   remuxed: boolean;
+  /** O áudio do sistema caiu no meio? Vem o motivo (ver record.rs). */
+  sysAudioError: string | null;
+}
+
+/** Nível de uma fonte, emitido pelo Rust (cpal) enquanto o medidor está ligado. */
+interface AudioLevelEvent {
+  target: "mic" | "system";
+  peak: number;
 }
 
 interface AnnotSnapshot {
@@ -111,6 +123,17 @@ export default function App() {
   const [camera, setCamera] = useState("");
   const [mic, setMic] = useState("");
 
+  // Áudio do sistema (WASAPI loopback, capturado no Rust — ver sysaudio.rs).
+  const [output, setOutput] = useState("");
+  const [sysOn, setSysOn] = useState(false);
+  /** Por que NÃO dá pra capturar aqui (sem placa de saída, Linux, driver
+   *  recusando). Preenchido = o controle fica desligado e a tela diz o motivo. */
+  const [sysErr, setSysErr] = useState<string | null>(null);
+  const [tracks, setTracks] = useState<AudioTracks>("mixed");
+  const [levels, setLevels] = useState({ mic: 0, system: 0 });
+  const [micMeterErr, setMicMeterErr] = useState<string | null>(null);
+  const [sysMeterErr, setSysMeterErr] = useState<string | null>(null);
+
   const [corner, setCorner] = useState<Corner>("br");
   const [sizePct, setSizePct] = useState(25);
   const [outDir, setOutDir] = useState("");
@@ -137,6 +160,9 @@ export default function App() {
       setScreen((prev) => pickDefault(list.screens, prev, PRIMARY_SCREEN));
       setCamera((prev) => pickDefault(list.cameras, prev));
       setMic((prev) => pickDefault(list.microphones, prev));
+      // A saída PADRÃO vem em primeiro na lista (contrato do sysaudio) — é o
+      // que o usuário quer em quase todo caso, então é o default aqui.
+      setOutput((prev) => pickDefault(list.outputs, prev, list.outputs[0]?.id ?? ""));
     } catch (e) {
       pushToast("error", t("sources.loadFailed", { error: String(e) }));
     } finally {
@@ -161,12 +187,29 @@ export default function App() {
     invoke<AnnotSnapshot>("annot_state").then(setAnnot).catch(() => {});
   }, [load]);
 
+  // A sonda decide se o áudio do sistema é OFERECÍVEL nesta máquina. Ela não
+  // captura nada — só pergunta ao Windows se existe saída de áudio e qual é.
+  // Sem isso o checkbox seria uma promessa: o usuário marcaria, gravaria 40min
+  // e descobriria no play que não tinha o que capturar.
+  useEffect(() => {
+    if (!isTauri) return;
+    invoke<SysAudioInfo>("sys_audio_probe", { deviceId: output || null })
+      .then(() => setSysErr(null))
+      .catch((e) => {
+        setSysErr(String(e));
+        setSysOn(false);
+      });
+  }, [output]);
+
   // Progresso vem do próprio ffmpeg (`-progress pipe:1`), não de um cronômetro
   // nosso: o número na tela é o tempo que foi REALMENTE parar no arquivo.
   useEffect(() => {
     if (!isTauri) return;
     const un = [
       listen<RecProgress>("rec-progress", (e) => setProgress(e.payload)),
+      listen<AudioLevelEvent>("audio-level", (e) =>
+        setLevels((l) => ({ ...l, [e.payload.target]: e.payload.peak })),
+      ),
       listen<string>("rec-notice", (e) => pushToast("info", t("rec.fallback", { error: e.payload }))),
       // O atalho global liga a caneta sem passar por esta janela — sem ouvir
       // isto, o painel mentiria sobre o estado do overlay.
@@ -176,6 +219,44 @@ export default function App() {
       for (const p of un) void p.then((f) => f());
     };
   }, [pushToast]);
+
+  // Medidor do MICROFONE. Só enquanto parado: durante a gravação quem tem o mic
+  // é o ffmpeg (dshow), e ficar disputando o aparelho com ele seria pedir pra
+  // perder o áudio do take — que é o oposto do que este medidor existe pra fazer.
+  useEffect(() => {
+    if (!isTauri) return;
+    if (phase !== "idle" || !mic) {
+      void invoke("audio_monitor_stop", { target: "mic" });
+      setLevels((l) => ({ ...l, mic: 0 }));
+      return;
+    }
+    invoke("audio_monitor_start", { target: "mic", deviceId: mic })
+      .then(() => setMicMeterErr(null))
+      .catch((e) => setMicMeterErr(String(e)));
+  }, [mic, phase]);
+
+  // Medidor do ÁUDIO DO SISTEMA. Enquanto grava, quem manda nível é o próprio
+  // feed (o Rust já mede o que está mandando pro ffmpeg), então aqui o monitor
+  // avulso sai de cena e a barra continua viva.
+  useEffect(() => {
+    if (!isTauri) return;
+    if (phase !== "idle" || !sysOn || sysErr) {
+      void invoke("audio_monitor_stop", { target: "system" });
+      if (!sysOn) setLevels((l) => ({ ...l, system: 0 }));
+      return;
+    }
+    invoke("audio_monitor_start", { target: "system", deviceId: output || null })
+      .then(() => setSysMeterErr(null))
+      .catch((e) => setSysMeterErr(String(e)));
+  }, [output, sysOn, sysErr, phase]);
+
+  // Fechar a janela não pode deixar captura de áudio viva atrás.
+  useEffect(() => {
+    if (!isTauri) return;
+    return () => {
+      void invoke("audio_monitor_stop", { target: null });
+    };
+  }, []);
 
   const doStart = useCallback(async () => {
     const stamp = expandPattern(pattern, new Date());
@@ -189,12 +270,39 @@ export default function App() {
         path: mkvPath.replace(/\.mkv$/i, ".mp4"),
       });
 
+      // O áudio do sistema tem que subir ANTES dos args: é o Rust que cria o
+      // canal e sabe em que formato a placa mistura o som — esses números vão
+      // crus pro `-f s16le -ar … -ac …`. Sondar antes e confiar depois daria a
+      // chance de o usuário trocar o fone no meio e o áudio sair em câmera lenta.
+      let sysAudio: SysAudioSpec | null = null;
+      if (sysOn && !sysErr) {
+        try {
+          const info = await invoke<SysAudioInfo>("sys_audio_start", {
+            deviceId: output || null,
+          });
+          sysAudio = {
+            pipePath: info.pipePath,
+            sampleRate: info.sampleRate,
+            channels: info.channels,
+          };
+        } catch (e) {
+          // DEGRADAR COM HONESTIDADE: a gravação acontece (a tela é o que o
+          // usuário veio buscar), mas SEM o áudio do sistema e DIZENDO isso.
+          // O pecado seria seguir com o checkbox marcado e entregar um take em
+          // silêncio como se tudo tivesse dado certo.
+          setSysErr(String(e));
+          pushToast("info", t("rec.sysAudioOff", { error: String(e) }));
+        }
+      }
+
       const spec: RecordSpec = {
         platform,
         grabber: GRABBER,
         fps: FPS,
         camera: camera ? { id: camera, corner, sizePct } : null,
         mic: mic || null,
+        sysAudio,
+        audioTracks: tracks,
         encoder: encoder || "libx264",
         outPath: mkvPath,
       };
@@ -225,10 +333,13 @@ export default function App() {
       // Deu errado: a janela VOLTA. Ficar minimizada depois de um erro deixaria
       // o usuário achando que o app sumiu.
       if (isTauri) await getCurrentWindow().unminimize().catch(() => {});
+      // E o canal do áudio não pode sobreviver à gravação que não nasceu: ele
+      // segura uma captura WASAPI e uma thread esperando um ffmpeg que não vem.
+      if (isTauri) await invoke("sys_audio_stop").catch(() => {});
       setPhase("idle");
       pushToast("error", t("rec.failed", { error: String(e) }));
     }
-  }, [camera, corner, encoder, mic, outDir, pattern, pushToast, sizePct]);
+  }, [camera, corner, encoder, mic, outDir, output, pattern, pushToast, sizePct, sysErr, sysOn, tracks]);
 
   // Contagem regressiva: o usuário precisa de tempo pra sair do LocalRecord e
   // ir pra janela que ele vai demonstrar.
@@ -264,9 +375,14 @@ export default function App() {
     setPhase("stopping");
     try {
       const done = await invoke<RecordDone>("rec_stop");
-      // Ordem das mensagens: primeiro o aviso do kill (contexto), depois onde o
+      // Ordem das mensagens: primeiro os avisos (contexto), depois onde o
       // arquivo ficou (a informação que o usuário foi buscar).
       if (!done.graceful) pushToast("info", t("rec.killed"));
+      // O áudio do sistema caiu no meio: o usuário PRECISA saber agora, não na
+      // hora de editar. Silêncio inexplicado é o pior jeito de descobrir.
+      if (done.sysAudioError) {
+        pushToast("info", t("rec.sysAudioLost", { error: done.sysAudioError }));
+      }
       pushToast(
         done.remuxed ? "ok" : "info",
         done.remuxed ? t("rec.saved", { path: done.path }) : t("rec.savedMkv", { path: done.path }),
@@ -339,17 +455,85 @@ export default function App() {
                   emptyLabel={t("sources.noMic")}
                   disabled={busy}
                 />
+                {mic && (
+                  <div className="source-row">
+                    <span />
+                    <AudioMeter
+                      peak={levels.mic}
+                      error={micMeterErr ? t("audio.meterFailed", { error: micMeterErr }) : null}
+                    />
+                  </div>
+                )}
 
-                {/* Áudio do sistema: fora do escopo desta onda. O controle fica
-                    visível e desligado de propósito — some seria pior, o usuário
-                    ficaria procurando o que não existe ainda. */}
+                {/* Áudio do sistema: o que o computador está TOCANDO, capturado
+                    por WASAPI loopback no Rust (não pelo dshow — ver
+                    src-tauri/src/sysaudio.rs). */}
                 <div className="source-row">
-                  <span className="muted">{t("out.sysAudio")}</span>
-                  <label className="check" title={t("out.sysAudioSoon")}>
-                    <input type="checkbox" disabled checked={false} readOnly />
-                    <span className="muted small">{t("out.sysAudioSoon")}</span>
+                  <span className="muted">{t("audio.sysAudio")}</span>
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      checked={sysOn}
+                      disabled={busy || !!sysErr}
+                      onChange={(e) => setSysOn(e.target.checked)}
+                    />
+                    <span>{t("audio.sysArm")}</span>
                   </label>
                 </div>
+
+                {sysErr ? (
+                  // Não dá aqui, e a tela DIZ por quê (sem placa de saída, Linux,
+                  // driver recusando). Checkbox cinza e mudo faria o usuário
+                  // procurar o problema nele mesmo.
+                  <div className="source-row">
+                    <span />
+                    <p className="muted small meter-msg">
+                      {t("audio.sysUnavailable", { error: sysErr })}
+                    </p>
+                  </div>
+                ) : (
+                  sysOn && (
+                    <>
+                      <SourceSelect
+                        label={t("sources.output")}
+                        devices={devices.outputs}
+                        value={output}
+                        onChange={setOutput}
+                        disabled={busy}
+                      />
+                      <div className="source-row">
+                        <span />
+                        <AudioMeter
+                          peak={levels.system}
+                          error={
+                            sysMeterErr ? t("audio.meterFailed", { error: sysMeterErr }) : null
+                          }
+                        />
+                      </div>
+                      <p className="muted small">{t("audio.sysHint")}</p>
+                      {mic && (
+                        <>
+                          {/* Faixas separadas só com as DUAS fontes: "separar"
+                              uma fonte só não quer dizer nada. */}
+                          <div className="source-row">
+                            <span className="muted">{t("audio.tracks")}</span>
+                            <select
+                              value={tracks}
+                              disabled={busy}
+                              onChange={(e) => setTracks(e.target.value as AudioTracks)}
+                            >
+                              <option value="mixed">{t("audio.tracksMixed")}</option>
+                              <option value="separate">{t("audio.tracksSeparate")}</option>
+                            </select>
+                          </div>
+                          {tracks === "separate" && (
+                            <p className="muted small">{t("audio.tracksHint")}</p>
+                          )}
+                        </>
+                      )}
+                    </>
+                  )
+                )}
 
                 {devices.screens.length === 0 && <p className="muted small">{t("sources.empty")}</p>}
               </>

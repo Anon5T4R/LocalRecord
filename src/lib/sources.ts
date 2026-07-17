@@ -9,10 +9,46 @@ export interface DeviceList {
   screens: Device[];
   cameras: Device[];
   microphones: Device[];
+  /** Saídas de áudio: a fonte do áudio DO SISTEMA (grava-se o que sai por elas,
+   *  via WASAPI loopback no Rust). A PADRÃO vem em primeiro (contrato do
+   *  `sysaudio::list_outputs`) — por isso o `[0]` é o default aqui. */
+  outputs: Device[];
+}
+
+/** O que o `sys_audio_start` do Rust devolve quando a captura sobe. */
+export interface SysAudioInfo {
+  id: string;
+  label: string;
+  sampleRate: number;
+  channels: number;
+  /** Named pipe por onde o PCM entra no ffmpeg (NÃO é o stdin — ver args.ts). */
+  pipePath: string;
 }
 
 /** Id sintético da tela principal (contrato provisório — ver devices.rs). */
 export const PRIMARY_SCREEN = "primary";
+
+/**
+ * Pico linear (0..1) → largura da barra do VU, em %.
+ *
+ * Linear seria inútil: metade do volume que a gente PERCEBE mora abaixo de 0,1
+ * linear, e a barra passaria a gravação inteira parecendo vazia. A escala é em
+ * dBFS, de -60 dB (nada) a 0 dB (estourando), que é o que todo medidor de áudio
+ * do mundo mostra.
+ */
+export function meterPct(peak: number): number {
+  if (!Number.isFinite(peak) || peak <= 0) return 0;
+  const db = 20 * Math.log10(Math.min(1, peak));
+  if (db <= -60) return 0;
+  return Math.min(100, ((db + 60) / 60) * 100);
+}
+
+/** O rótulo em dB do medidor. "—" quando não há sinal nenhum: escrever
+ *  "-infinito dB" seria tecnicamente certo e humanamente inútil. */
+export function meterDb(peak: number): string {
+  if (!Number.isFinite(peak) || peak <= 0.0001) return "—";
+  return `${(20 * Math.log10(Math.min(1, peak))).toFixed(0)} dB`;
+}
 
 /**
  * Escolhe o que deixar selecionado quando a lista chega.

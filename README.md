@@ -11,6 +11,19 @@ câmera no canto e **anote AO VIVO** por cima. Sem live, sem nuvem, sem conta.
 - Runtime de mídia (ffmpeg) embutido, com aviso na UI se faltar
 - Tema claro/escuro/sistema + 5 temas nomeados · UI em **PT/EN/ES**
 
+**Áudio do sistema — WASAPI loopback (feito, Windows)**
+- Grava **o que o computador está tocando** capturando o *loopback* da saída de
+  áudio **no Rust** (WASAPI direto, em modo *polling*), não pelo `dshow` do
+  ffmpeg. O PCM entra no ffmpeg por um **named pipe** próprio — o stdin fica
+  reservado pro `q` do stop gracioso.
+- **Medidores de nível (VU)** ao vivo pro microfone e pro áudio do sistema: dá
+  pra ver o som entrando **antes** de gravar.
+- Mic + sistema **mixados** por padrão, ou em **faixas separadas** (`-map`) pra
+  equilibrar na edição.
+- **Degrada com honestidade:** sem saída de áudio, ou se o loopback falhar, o
+  app diz o motivo e grava sem o áudio do sistema — nunca grava mudo fingindo.
+- **Linux:** pendente (o caminho é o monitor do PulseAudio/pipewire).
+
 **Em construção**
 - **Onda 2:** motor de gravação — start/stop **gracioso** (o ffmpeg recebe `q`
   no stdin, nunca `kill`, senão o arquivo fica sem índice), gravação em **MKV**

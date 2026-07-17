@@ -30,17 +30,45 @@ export interface CameraSpec {
   sizePct: number;
 }
 
+/** O áudio do sistema NÃO é uma entrada de dispositivo do ffmpeg: é PCM cru que
+ *  o Rust captura por WASAPI loopback e despeja num named pipe (ver
+ *  `src-tauri/src/sysaudio.rs`). Aqui só entra o endereço do cano e o formato.
+ *
+ *  Os três campos vêm do `sys_audio_start` — inclusive o formato, que é o do
+ *  dispositivo (não escolha nossa): quem manda no mix format é a placa. */
+export interface SysAudioSpec {
+  /** `\\.\pipe\localrecord-sysaudio-<pid>` — quem cria e alimenta é o Rust. */
+  pipePath: string;
+  sampleRate: number;
+  channels: number;
+}
+
+/** `mixed` = mic e sistema numa faixa só (o padrão do plano: "saída padrão =
+ *  composto"). `separate` = uma faixa pra cada, pra ajustar o volume de cada
+ *  fonte na edição ("modo produção"). Só faz sentido com as DUAS fontes ligadas. */
+export type AudioTracks = "mixed" | "separate";
+
 export interface RecordSpec {
   platform: Platform;
   grabber: Grabber;
   fps: number;
   camera: CameraSpec | null;
-  /** Id do microfone, ou null pra gravar mudo. */
+  /** Id do microfone, ou null pra gravar sem mic. */
   mic: string | null;
+  /** Áudio do sistema, ou null pra não gravar o que o computador toca. */
+  sysAudio: SysAudioSpec | null;
+  audioTracks: AudioTracks;
   encoder: Encoder;
   /** Arquivo de saída — sempre .mkv (recuperável se faltar luz). */
   outPath: string;
 }
+
+/** Rótulos das faixas no modo separado. Ficam em português mesmo com a UI em
+ *  outro idioma: são metadados que vão PRO ARQUIVO e a gravação seria feita em
+ *  pt hoje e aberta em en amanhã — nome de faixa que muda com o idioma da UI
+ *  viraria biblioteca com dois nomes pra mesma coisa. */
+const TRACK_MIC = "Microfone";
+const TRACK_SYS = "Áudio do sistema";
 
 /** Margem da câmera até a borda, em pixels do vídeo final. */
 const MARGIN = 16;
@@ -97,11 +125,51 @@ function encoderArgs(e: Encoder): string[] {
   }
 }
 
+/** A parte de ÁUDIO do grafo + os `-map` dela.
+ *
+ *  Uma fonte só não precisa de filtro nenhum (`-map N:a` e pronto) — filtro à
+ *  toa é mais um lugar pra dar errado numa gravação ao vivo.
+ *
+ *  `amix` com `normalize=0` de propósito: o padrão do amix DIVIDE cada entrada
+ *  pelo número de entradas, ou seja, ligar o áudio do sistema derrubaria o
+ *  volume do microfone pela metade — o usuário culparia o microfone. Com
+ *  `normalize=0` cada fonte entra com o volume que tem. */
+export function buildAudio(
+  micIdx: number,
+  sysIdx: number,
+  tracks: AudioTracks,
+): { chain: string; maps: string[] } {
+  const hasMic = micIdx >= 0;
+  const hasSys = sysIdx >= 0;
+  if (!hasMic && !hasSys) return { chain: "", maps: [] };
+  if (hasMic && hasSys) {
+    if (tracks === "separate") {
+      // Faixas separadas: o editor recebe mic e sistema em trilhas próprias e
+      // decide o balanço lá (é o "modo produção" do plano). Os títulos entram
+      // pra ninguém precisar adivinhar qual é qual no LocalVideo.
+      return {
+        chain: "",
+        maps: [
+          "-map", `${micIdx}:a`,
+          "-map", `${sysIdx}:a`,
+          "-metadata:s:a:0", `title=${TRACK_MIC}`,
+          "-metadata:s:a:1", `title=${TRACK_SYS}`,
+        ],
+      };
+    }
+    return {
+      chain: `[${micIdx}:a][${sysIdx}:a]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[a]`,
+      maps: ["-map", "[a]"],
+    };
+  }
+  return { chain: "", maps: ["-map", `${hasMic ? micIdx : sysIdx}:a`] };
+}
+
 /**
  * Monta a linha de comando completa da gravação.
  *
  * Layout dos índices de entrada (importa pro `-map`): tela = 0, câmera = 1 (se
- * houver), microfone = a próxima livre.
+ * houver), microfone e áudio do sistema nas próximas livres, nessa ordem.
  */
 export function buildRecordArgs(s: RecordSpec): string[] {
   const args: string[] = [];
@@ -111,6 +179,7 @@ export function buildRecordArgs(s: RecordSpec): string[] {
   let next = 1;
   const camIdx = s.camera ? next++ : -1;
   const micIdx = s.mic ? next++ : -1;
+  const sysIdx = s.sysAudio ? next++ : -1;
 
   if (s.camera) {
     if (s.platform === "windows") {
@@ -128,6 +197,23 @@ export function buildRecordArgs(s: RecordSpec): string[] {
     } else {
       args.push("-f", "pulse", "-i", s.mic);
     }
+  }
+  if (s.sysAudio) {
+    // PCM cru do WASAPI loopback chegando por um named pipe. Detalhes que
+    // importam:
+    //  - o formato NÃO é escolha nossa: é o mix format do dispositivo, e o
+    //    Rust informa qual é (reamostrar aqui seria inventar trabalho e erro);
+    //  - `-thread_queue_size`: o cano é alimentado em tempo real; fila curta
+    //    faz o ffmpeg reclamar de "thread message queue blocking" e engasgar;
+    //  - isto NÃO é `pipe:`/stdin. O stdin do ffmpeg é do `q` do stop gracioso
+    //    (record.rs) — ocupá-lo com áudio custaria o trailer de todo take.
+    args.push(
+      "-f", "s16le",
+      "-ar", String(s.sysAudio.sampleRate),
+      "-ac", String(s.sysAudio.channels),
+      "-thread_queue_size", "1024",
+      "-i", s.sysAudio.pipePath,
+    );
   }
 
   // Grafo de filtros. Sempre nomeado [v] + `-map [v]` pra sair igual nos dois
@@ -147,10 +233,12 @@ export function buildRecordArgs(s: RecordSpec): string[] {
   } else {
     graph = `${scr};[scr]format=yuv420p[v]`;
   }
-  args.push("-filter_complex", graph, "-map", "[v]");
+  const audio = buildAudio(micIdx, sysIdx, s.audioTracks);
+  // O grafo é UMA string só: o áudio entra no mesmo `-filter_complex` do vídeo.
+  args.push("-filter_complex", audio.chain ? `${graph};${audio.chain}` : graph, "-map", "[v]");
 
-  if (micIdx >= 0) {
-    args.push("-map", `${micIdx}:a`, "-c:a", "aac", "-b:a", "160k");
+  if (audio.maps.length > 0) {
+    args.push(...audio.maps, "-c:a", "aac", "-b:a", "160k");
   }
 
   args.push(...encoderArgs(s.encoder));

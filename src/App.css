@@ -492,3 +492,40 @@ select:disabled {
     animation: none;
   }
 }
+
+/* Medidor de nível (VU). A barra usa var(--accent) porque é a cor de "isto
+   está vivo" no app inteiro; o vermelho fica reservado pro topo da escala, que
+   é aviso de verdade (clipping não se conserta na edição). */
+.meter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.meter {
+  flex: 1;
+  height: 8px;
+  min-width: 60px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.meter-fill {
+  height: 100%;
+  background: var(--accent);
+  /* Curto de propósito: o medidor tem que parecer o som ENTRANDO agora, não uma
+     animação bonita chegando atrasada. */
+  transition: width 60ms linear;
+}
+.meter-fill.hot {
+  background: var(--danger);
+}
+.meter-db {
+  min-width: 44px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.meter-msg {
+  margin: 2px 0 0;
+}

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { formatBytes, formatDuration, pickDefault, type Device } from "../sources";
+import {
+  formatBytes,
+  formatDuration,
+  meterDb,
+  meterPct,
+  pickDefault,
+  type Device,
+} from "../sources";
 
 const dev = (id: string): Device => ({ id, label: id });
 
@@ -30,6 +37,32 @@ describe("formatDuration", () => {
   it("entrada inválida não vira NaN na tela", () => {
     expect(formatDuration(-1)).toBe("00:00");
     expect(formatDuration(Number.NaN)).toBe("00:00");
+  });
+});
+
+describe("medidor de nível", () => {
+  it("a barra é em dB, não linear", () => {
+    // Estourando = cheia; -60 dB (0,001 linear) = o fundo da escala.
+    expect(meterPct(1)).toBe(100);
+    expect(meterPct(0.001)).toBe(0);
+    // O caso que justifica a escala: 0,1 linear é MUITO áudio (-20 dB) e numa
+    // barra linear seria um risquinho de 10% que o usuário leria como "mudo".
+    expect(Math.round(meterPct(0.1))).toBe(67);
+    expect(Math.round(meterPct(0.5))).toBe(90);
+  });
+
+  it("silêncio é zero e nunca vira NaN/negativo na tela", () => {
+    expect(meterPct(0)).toBe(0);
+    expect(meterPct(-1)).toBe(0);
+    expect(meterPct(Number.NaN)).toBe(0);
+    // Pico acima de 1 (o mix do Windows é float) não estica a barra pra fora.
+    expect(meterPct(2)).toBe(100);
+  });
+
+  it("o rótulo em dB não diz '-Infinity'", () => {
+    expect(meterDb(0)).toBe("—");
+    expect(meterDb(1)).toBe("0 dB");
+    expect(meterDb(0.5)).toBe("-6 dB");
   });
 });
 

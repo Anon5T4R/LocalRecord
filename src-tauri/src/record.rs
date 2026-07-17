@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
 use crate::ffmpeg::{no_window, parse_progress_line, resolve_bin, FFMPEG_BIN};
+use crate::sysaudio::SysAudioState;
 
 /// Quanto esperar o ffmpeg fechar o contêiner sozinho antes de partir pro kill.
 const STOP_BUDGET_MS: u64 = 5_000;
@@ -68,6 +69,11 @@ pub struct RecordDone {
     pub graceful: bool,
     /// false = o remux falhou e o arquivo final é o MKV.
     pub remuxed: bool,
+    /// O áudio do sistema deu problema no meio do caminho? Vem o motivo. A
+    /// gravação não é desfeita por causa disso (o vídeo vale mais), mas o
+    /// usuário PRECISA saber que aquele trecho é silêncio de verdade — descobrir
+    /// no play seria a pior hora possível.
+    pub sys_audio_error: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -324,6 +330,7 @@ fn try_start(
 pub fn rec_start(
     app: tauri::AppHandle,
     state: State<'_, RecState>,
+    sys: State<'_, SysAudioState>,
     opts: RecordOpts,
 ) -> Result<RecordingInfo, String> {
     {
@@ -341,12 +348,25 @@ pub fn rec_start(
             // subiu, e avisa a UI (o usuário merece saber que está no caminho
             // lento — gdigrab custa CPU e não pega janelas com overlay).
             let Some(fb) = opts.fallback_args.clone() else {
+                crate::sysaudio::stop_feed(&sys);
                 return Err(first);
             };
             let _ = app.emit("rec-notice", first.clone());
-            let (c, e) = try_start(&app, &ffmpeg, &fb)
-                .map_err(|second| format!("{} | fallback também falhou: {}", first, second))?;
-            (c, e, true)
+            // O canal do áudio do sistema morreu junto com a 1ª tentativa (o
+            // named pipe vive enquanto o ffmpeg que o abriu vive). Sem refazer,
+            // o plano B nasceria sem o que abrir e falharia por um motivo que
+            // nada tem a ver com o gdigrab.
+            if let Err(e) = crate::sysaudio::restart_feed(&app, &sys) {
+                crate::sysaudio::stop_feed(&sys);
+                return Err(format!("{} | e o canal do áudio do sistema não voltou: {}", first, e));
+            }
+            match try_start(&app, &ffmpeg, &fb) {
+                Ok((c, e)) => (c, e, true),
+                Err(second) => {
+                    crate::sysaudio::stop_feed(&sys);
+                    return Err(format!("{} | fallback também falhou: {}", first, second));
+                }
+            }
         }
     };
 
@@ -395,7 +415,11 @@ pub fn graceful_stop(child: &mut Child) -> bool {
 
 /// Para a gravação e entrega o MP4.
 #[tauri::command(async)]
-pub fn rec_stop(app: tauri::AppHandle, state: State<'_, RecState>) -> Result<RecordDone, String> {
+pub fn rec_stop(
+    app: tauri::AppHandle,
+    state: State<'_, RecState>,
+    sys: State<'_, SysAudioState>,
+) -> Result<RecordDone, String> {
     // Sai do estado JÁ: um segundo clique no stop não pode pegar o mesmo Child.
     let mut rec = state
         .inner
@@ -404,7 +428,17 @@ pub fn rec_stop(app: tauri::AppHandle, state: State<'_, RecState>) -> Result<Rec
         .take()
         .ok_or("não há gravação em andamento")?;
 
+    // ORDEM que importa pro áudio:
+    //  1. sinaliza o feed a parar ANTES do `q`. Assim, quando o ffmpeg fechar o
+    //     cano no shutdown, a quebra é ESPERADA e o pacer não a confunde com um
+    //     erro real (senão TODO stop acenderia um falso "o áudio caiu no meio").
+    //  2. o `q` e a espera do trailer.
+    //  3. só então lê o erro (que agora só tem falha REAL de meio de gravação) e
+    //     desmonta o feed de vez.
+    crate::sysaudio::signal_feed_stop(&sys);
     let graceful = graceful_stop(&mut rec.child);
+    let sys_audio_error = crate::sysaudio::feed_error(&sys);
+    crate::sysaudio::stop_feed(&sys);
 
     if !rec.mkv.exists() {
         let tail = rec.err.lock().map(|v| v.iter().cloned().collect::<Vec<_>>().join("\n")).unwrap_or_default();
@@ -437,6 +471,7 @@ pub fn rec_stop(app: tauri::AppHandle, state: State<'_, RecState>) -> Result<Rec
             path: rec.mp4.to_string_lossy().to_string(),
             graceful,
             remuxed: true,
+            sys_audio_error,
         }
     } else {
         // Remux falhou: o take NÃO se perde. Fica o MKV, que é reproduzível, e
@@ -445,6 +480,7 @@ pub fn rec_stop(app: tauri::AppHandle, state: State<'_, RecState>) -> Result<Rec
             path: rec.mkv.to_string_lossy().to_string(),
             graceful,
             remuxed: false,
+            sys_audio_error,
         }
     };
     let _ = app.emit("rec-done", done.clone());
@@ -462,13 +498,17 @@ pub fn rec_status(state: State<'_, RecState>) -> bool {
 /// Faz só o `q` + espera (o contêiner fecha e o MKV fica íntegro). NÃO remuxa:
 /// remux de uma gravação longa seguraria o app fechando por vários segundos, e
 /// o MKV já é um arquivo válido — o usuário abre normalmente.
-pub fn stop_on_exit(state: &RecState) {
+pub fn stop_on_exit(state: &RecState, sys: &SysAudioState) {
     if let Ok(mut guard) = state.inner.lock() {
         if let Some(rec) = guard.as_mut() {
             graceful_stop(&mut rec.child);
         }
         *guard = None;
     }
+    // Depois do `q`, pela mesma razão do rec_stop. E incondicional: se o app
+    // fecha sem gravação nenhuma, pode haver feed vivo de um start que deu
+    // errado no meio — o canal e as threads dele não podem sobreviver ao app.
+    crate::sysaudio::stop_feed(sys);
 }
 
 #[cfg(test)]

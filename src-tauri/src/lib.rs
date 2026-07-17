@@ -11,6 +11,9 @@
 pub mod annot;
 mod devices;
 mod ffmpeg;
+// Áudio do sistema (WASAPI loopback) + medidores de nível. `pub` pelo mesmo
+// motivo do `record`: o `examples/smoke_sysaudio.rs` exercita o feed de verdade.
+pub mod sysaudio;
 // `pub` pro `examples/smoke_record.rs` alcançar o `spawn_ffmpeg`/`graceful_stop`
 // e gravar de verdade com ffmpeg real — os testes do cargo são puros de
 // propósito (não baixam binário), então a prova empírica mora no example.
@@ -21,6 +24,7 @@ use tauri::Manager;
 use annot::AnnotState;
 use ffmpeg::FfState;
 use record::RecState;
+use sysaudio::{MonitorState, SysAudioState};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -46,10 +50,17 @@ pub fn run() {
         .manage(FfState::default())
         .manage(RecState::default())
         .manage(AnnotState::default())
+        .manage(SysAudioState::default())
+        .manage(MonitorState::default())
         .invoke_handler(tauri::generate_handler![
             ffmpeg::ffmpeg_ok,
             ffmpeg::ff_cancel,
             devices::list_devices,
+            sysaudio::sys_audio_probe,
+            sysaudio::sys_audio_start,
+            sysaudio::sys_audio_stop,
+            sysaudio::audio_monitor_start,
+            sysaudio::audio_monitor_stop,
             record::rec_start,
             record::rec_stop,
             record::rec_status,
@@ -83,7 +94,7 @@ pub fn run() {
                 // o app não pode custar o take do usuário. Só depois o `kill_all`
                 // varre o resto (remux/sonda), que é descartável — matar aqueles
                 // não perde nada, matar a gravação perderia o trailer do arquivo.
-                record::stop_on_exit(&app.state::<RecState>());
+                record::stop_on_exit(&app.state::<RecState>(), &app.state::<SysAudioState>());
                 ffmpeg::kill_all(&app.state::<FfState>());
             }
         });

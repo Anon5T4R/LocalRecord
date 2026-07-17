@@ -35,6 +35,11 @@ pub struct DeviceList {
     pub screens: Vec<Device>,
     pub cameras: Vec<Device>,
     pub microphones: Vec<Device>,
+    /// Saídas de áudio — a fonte do áudio DO SISTEMA (WASAPI loopback: a gente
+    /// grava o que sai por elas). Não vêm do dshow como o resto: quem enumera é
+    /// o cpal, no `sysaudio` (a lista do dshow só mostra "Mixagem estéreo"
+    /// quando o fabricante deixou, que é o problema que o loopback resolve).
+    pub outputs: Vec<Device>,
 }
 
 /// Tipo de dispositivo dshow, como o ffmpeg classifica.
@@ -163,22 +168,25 @@ fn v4l2_cameras() -> Vec<Device> {
 #[tauri::command(async)]
 pub fn list_devices(app: tauri::AppHandle) -> Result<DeviceList, String> {
     let screens = primary_screen();
+    let outputs = crate::sysaudio::list_outputs();
 
     #[cfg(windows)]
     {
         let stderr = dshow_stderr(&app)?;
         let (cameras, microphones) = parse_dshow_devices(&stderr);
-        Ok(DeviceList { screens, cameras, microphones })
+        Ok(DeviceList { screens, cameras, microphones, outputs })
     }
 
     #[cfg(not(windows))]
     {
         let _ = &app;
         // STUB de áudio no Linux: enumerar PulseAudio/ALSA de verdade pede
-        // `pactl list sources` (ou libpulse). A onda 2 resolve junto com o
-        // áudio do sistema; por ora, o default do pulse cobre o caso comum.
+        // `pactl list sources` (ou libpulse). Fica junto com o áudio do sistema
+        // no Linux (monitor do pulse), que também está pendente; por ora, o
+        // default do pulse cobre o caso comum. `outputs` vem VAZIA — e vazia a
+        // UI diz "não dá pra capturar o áudio do sistema aqui", que é a verdade.
         let microphones = vec![Device { id: "default".to_string(), label: "default".to_string() }];
-        Ok(DeviceList { screens, cameras: v4l2_cameras(), microphones })
+        Ok(DeviceList { screens, cameras: v4l2_cameras(), microphones, outputs })
     }
 }
 

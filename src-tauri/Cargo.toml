@@ -1,6 +1,6 @@
 [package]
 name = "localrecord"
-version = "0.1.3"
+version = "0.2.0"
 description = "LocalRecord — estúdio de captura de tela 100% offline da suíte Local"
 authors = ["Taylor"]
 edition = "2021"
@@ -20,6 +20,42 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+# Áudio do sistema (WASAPI loopback) e medidores de nível — ver sysaudio.rs.
+# Dep SÓ do Windows de propósito: o caminho Linux (monitor do PulseAudio) ainda
+# não existe, então não se paga dep de áudio no CI por um caminho que não roda.
+#
+# WASAPI direto (crate `windows`), NÃO o `cpal`: a captura de loopback é feita
+# em modo POLLING (sem AUDCLNT_STREAMFLAGS_EVENTCALLBACK). O cpal 0.15 força o
+# modo por evento e, num driver Realtek testado nesta suíte, isso TRAVA a
+# chamada `Initialize` (não devolve nem erro) — e travar congelaria a gravação.
+# O caminho por polling devolve erro na hora e degrada com honestidade. A justi-
+# ficativa completa (com o experimento) está no topo do `sysaudio/win.rs`.
+windows = { version = "0.58", features = [
+  "Win32_Foundation",
+  "Win32_Media_Audio",
+  "Win32_Media_KernelStreaming",
+  "Win32_Media_Multimedia",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Threading",
+  "Win32_System_Variant",
+  "Win32_Devices_FunctionDiscovery",
+  # PKEY_Device_FriendlyName + IPropertyStore (nome amigável do endpoint).
+  "Win32_UI_Shell_PropertiesSystem",
+] }
+# Named pipe (CreateNamedPipeW): é por ele que o PCM entra no ffmpeg, porque o
+# stdin já é do `q` do stop gracioso (ver record.rs). Fica no windows-sys (API
+# fina, sem COM) enquanto o áudio usa o `windows` (COM tipado) — cada um no que
+# é bom.
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_System_Pipes",
+  "Win32_Storage_FileSystem",
+  "Win32_Security",
+  "Win32_System_IO",
+] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"
