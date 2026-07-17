@@ -1,10 +1,14 @@
+/* Superficies suavizadas: o fundo nao pode ser a coisa mais forte da tela.
+   Branco puro tem contraste maximo contra tudo e rouba o foco do accent, entao
+   o --panel virou off-white tingido com o matiz do --bg (nunca #fff) e o --bg
+   desceu ~4 pontos de L*. A escada bg < panel-2 < panel do app foi preservada. */
 :root {
-  --bg: #f4f6fb;
-  --panel: #ffffff;
-  --panel-2: #f7f9fc;
+  --bg: #eaebf0;
+  --panel: #f7f9fe;
+  --panel-2: #eef0f3;
   --text: #16202e;
-  --muted: #6a7688;
-  --border: #e3e8f0;
+  --muted: #687485;
+  --border: #d8dde5;
   --accent: #8b5cf6;
   --accent-2: #a78bfa;
   --accent-ink: #ffffff;
@@ -19,12 +23,12 @@
 }
 
 :root[data-theme="dark"] {
-  --bg: #0e131b;
-  --panel: #161d28;
-  --panel-2: #1b2431;
+  --bg: #191d25;
+  --panel: #202733;
+  --panel-2: #262e3c;
   --text: #e7edf5;
   --muted: #8695a8;
-  --border: #27313f;
+  --border: #323c4b;
   --accent: #a78bfa;
   --accent-2: #c4b5fd;
   --accent-ink: #1e1033;
@@ -39,12 +43,12 @@
 
 /* ---- Temas nomeados (paletas fixas; sobrepõem o accent do app) ---- */
 :root[data-theme="nature"] {
-  --bg: #f5f7f2;
-  --panel: #ffffff;
-  --panel-2: #eef2ea;
+  --bg: #eef1e9;
+  --panel: #f8faf5;
+  --panel-2: #e4eade;
   --text: #2e3a2e;
-  --muted: #6f7d6f;
-  --border: #e2e8dd;
+  --muted: #697669;
+  --border: #dbe3d4;
   --accent: #7a9e7e;
   --accent-2: #e8b4c8;
   --accent-ink: #1e2a1e;
@@ -57,15 +61,15 @@
   --err-border: #e6a99b;
   --shadow: 0 10px 30px rgba(60, 80, 50, 0.14);
   --radius: 12px;
-  --term-bg: #ffffff;
+  --term-bg: #f8faf5;
 }
 :root[data-theme="darkblue"] {
-  --bg: #0d1520;
-  --panel: #131f30;
-  --panel-2: #1a2942;
+  --bg: #16202e;
+  --panel: #1d2a3c;
+  --panel-2: #26374e;
   --text: #e2e8f0;
   --muted: #8595ad;
-  --border: #223049;
+  --border: #2d3f59;
   --accent: #3b82f6;
   --accent-2: #60a5fa;
   --accent-ink: #ffffff;
@@ -78,15 +82,15 @@
   --err-border: #7f1d1d;
   --shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
   --radius: 12px;
-  --term-bg: #0d1520;
+  --term-bg: #16202e;
 }
 :root[data-theme="calmgreen"] {
-  --bg: #f2f5f1;
-  --panel: #ffffff;
-  --panel-2: #e9efe7;
+  --bg: #eaf0e9;
+  --panel: #f7faf6;
+  --panel-2: #dfe8dd;
   --text: #24302a;
-  --muted: #6a7a6f;
-  --border: #dde6dc;
+  --muted: #67776c;
+  --border: #d5e0d3;
   --accent: #4f7d5e;
   --accent-2: #6fa07e;
   --accent-ink: #ffffff;
@@ -99,15 +103,15 @@
   --err-border: #e6a99b;
   --shadow: 0 10px 30px rgba(40, 70, 50, 0.14);
   --radius: 12px;
-  --term-bg: #ffffff;
+  --term-bg: #f7faf6;
 }
 :root[data-theme="pastelpink"] {
-  --bg: #fdf4f7;
-  --panel: #ffffff;
-  --panel-2: #f9eaf0;
+  --bg: #f8ebf0;
+  --panel: #fdf6f9;
+  --panel-2: #f2dde6;
   --text: #3a2a30;
-  --muted: #8a7580;
-  --border: #f2dfe7;
+  --muted: #806d77;
+  --border: #ecd3de;
   --accent: #e8799f;
   --accent-2: #f4a9c4;
   --accent-ink: #3a2028;
@@ -120,15 +124,15 @@
   --err-border: #f0a9bc;
   --shadow: 0 10px 30px rgba(120, 60, 90, 0.14);
   --radius: 12px;
-  --term-bg: #ffffff;
+  --term-bg: #fdf6f9;
 }
 :root[data-theme="punkprincess"] {
-  --bg: #120a1a;
-  --panel: #1a0f26;
-  --panel-2: #241533;
+  --bg: #1c1228;
+  --panel: #251733;
+  --panel-2: #32204a;
   --text: #f0e6ff;
   --muted: #9a86b5;
-  --border: #2c1c3d;
+  --border: #3a2850;
   --accent: #ff2d95;
   --accent-2: #2de2ff;
   --accent-ink: #12061a;
@@ -141,7 +145,7 @@
   --err-border: #8a2444;
   --shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
   --radius: 12px;
-  --term-bg: #120a1a;
+  --term-bg: #1c1228;
 }
 
 * {
