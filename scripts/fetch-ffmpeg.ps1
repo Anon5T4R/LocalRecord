@@ -19,13 +19,21 @@ $ProgressPreference = "SilentlyContinue"
 # `n8.1.2` é build do branch de RELEASE (estável); `latest` apontava pro
 # master, que muda todo dia por definição.
 #
-# PRA ATUALIZAR: escolher a tag nova em github.com/BtbN/FFmpeg-Builds/releases,
-# baixar os dois artefatos, rodar `sha256sum` e trocar as constantes aqui e no
-# `fetch-ffmpeg.sh`. Nunca voltar pra `latest`.
+# ⚠️ POR QUE UMA TAG DE FIM DE MÊS, e não a mais recente: o BtbN mantém só ~38
+# releases. As recentes são DIÁRIAS e vão sendo podadas; o que sobrevive a longo
+# prazo é a do ÚLTIMO DIA DE CADA MÊS (há tags mensais desde 2024-08). Fixar numa
+# diária é fixar numa versão com prazo de validade — quando ela some, o build
+# quebra com 404 em todo app que a usa. Aconteceu de eu fixar numa diária nesta
+# mesma passada e ter que corrigir.
+#
+# PRA ATUALIZAR: escolher outra tag de FIM DE MÊS em
+# github.com/BtbN/FFmpeg-Builds/releases, baixar os dois artefatos, rodar
+# `sha256sum` e trocar as constantes aqui e no par (.ps1/.sh). Nunca `latest`,
+# nunca uma diária.
 # ---------------------------------------------------------------------------
-$ffTag = "autobuild-2026-07-17-13-22"
-$ffAsset = "ffmpeg-n8.1.2-22-g94138f6973-win64-gpl-8.1.zip"
-$ffSha256 = "3a6b700bf8fbcbc5fb48dd68cebcc41253196c00568410e1d492cd9c45f1589c"
+$ffTag = "autobuild-2026-06-30-13-34"
+$ffAsset = "ffmpeg-n8.1.2-21-gce3c09c101-win64-gpl-8.1.zip"
+$ffSha256 = "682361e32c9631caec09e5d9f09077101c9ed90c14e275f62014fefa6d397990"
 
 $root = Split-Path -Parent $PSScriptRoot
 $ffDir = Join-Path $root "src-tauri\binaries\ffmpeg"

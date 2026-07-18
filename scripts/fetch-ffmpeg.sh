@@ -16,11 +16,13 @@ set -euo pipefail
 # Resumo: `latest` é tag ROLANTE (build diferente a cada dia, sem verificação
 # nenhuma). Agora: tag fixa + sha256 conferido antes de extrair.
 # `-gpl` (e não `-gpl-shared`): estático, sem arrastar .so pro AppImage.
+# TAG DE FIM DE MES de proposito: o BtbN poda as diarias e so as mensais
+# sobrevivem (ver o comentario longo no .ps1). Fixar numa diaria = 404 futuro.
 # PRA ATUALIZAR: trocar as constantes aqui E no .ps1, sempre juntos.
 # ---------------------------------------------------------------------------
-FF_TAG="autobuild-2026-07-17-13-22"
-FF_ASSET="ffmpeg-n8.1.2-22-g94138f6973-linux64-gpl-8.1.tar.xz"
-FF_SHA256="ca1b5eb366743fc44a415e1496dd39a8b3266d99d786bd3eb8cbd837452e306e"
+FF_TAG="autobuild-2026-06-30-13-34"
+FF_ASSET="ffmpeg-n8.1.2-21-gce3c09c101-linux64-gpl-8.1.tar.xz"
+FF_SHA256="0ba73bbd93472c7622f6dec26d334c5e62e64d858d072490b2844320970456cd"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FF_DIR="$ROOT/src-tauri/binaries/ffmpeg"
