@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import AudioMeter from "./components/AudioMeter";
 import Preview from "./components/Preview";
@@ -10,9 +10,7 @@ import {
   buildRecordArgs,
   buildRemuxArgs,
   expandPattern,
-  pickCamMode,
   type AudioTracks,
-  type CamMode,
   type Corner,
   type Encoder,
   type Grabber,
@@ -159,9 +157,6 @@ export default function App() {
   const [ffOk, setFfOk] = useState(true); // otimista: só avisa depois de confirmar
   const [screen, setScreen] = useState(initial.screen);
   const [camera, setCamera] = useState(initial.camera);
-  // Modos que a câmera escolhida oferece de verdade. Vazio = não deu pra
-  // enumerar (Linux, ou o dispositivo não respondeu) e aí o ffmpeg decide.
-  const [camModes, setCamModes] = useState<CamMode[]>([]);
   const [mic, setMic] = useState(initial.mic);
 
   // Áudio do sistema (WASAPI loopback, capturado no Rust — ver sysaudio.rs).
@@ -303,24 +298,6 @@ export default function App() {
       });
   }, [output]);
 
-  // Os modos da câmera escolhida. Perguntar ao DISPOSITIVO em vez de deixar o
-  // dshow escolher foi o conserto do bug de 2026-07-18: ele escolhia 1080p cru,
-  // que a webcam só entrega a 5 fps, e a gravação inteira ia junto.
-  useEffect(() => {
-    if (!isTauri || !camera) {
-      setCamModes([]);
-      return;
-    }
-    let alive = true;
-    invoke<CamMode[]>("camera_modes", { id: camera })
-      .then((m) => alive && setCamModes(m))
-      // Falhar aqui não impede gravar: sem modos, volta ao comportamento antigo.
-      .catch(() => alive && setCamModes([]));
-    return () => {
-      alive = false;
-    };
-  }, [camera]);
-
   // Progresso vem do próprio ffmpeg (`-progress pipe:1`), não de um cronômetro
   // nosso: o número na tela é o tempo que foi REALMENTE parar no arquivo.
   useEffect(() => {
@@ -441,13 +418,28 @@ export default function App() {
         }
       }
 
+      // A CÂMERA NÃO VAI MAIS PRO FFMPEG. Ela é desenhada na janela de anotação,
+      // que já fica por cima da tela e é capturada pelo `ddagrab` junto com o
+      // resto — de graça, como os riscos da caneta.
+      //
+      // O motivo é medido: duas capturas ao vivo no mesmo processo ffmpeg
+      // derrubam a gravação de 30 pra 10 fps (ver `args.ts`). Como a janela
+      // precisa estar VISÍVEL pra ser capturada, gravar com câmera arma o
+      // overlay — sem ligar a caneta, então ele segue transparente ao clique e
+      // a barrinha de ferramentas não aparece.
+      if (isTauri && camera) {
+        try {
+          await invoke("annot_arm", { on: true });
+        } catch (e) {
+          pushToast("info", t("rec.camOverlayOff", { error: String(e) }));
+        }
+        await emit("annot-camera", { id: camera, corner, sizePct });
+      }
+
       const spec: RecordSpec = {
         platform,
         grabber: GRABBER,
         fps,
-        camera: camera
-          ? { id: camera, corner, sizePct, mode: pickCamMode(camModes, fps, sizePct) }
-          : null,
         mic: mic || null,
         micAudio,
         sysAudio,
@@ -491,7 +483,7 @@ export default function App() {
       setPhase("idle");
       pushToast("error", t("rec.failed", { error: String(e) }));
     }
-  }, [camera, camModes, corner, encoder, fps, mic, outDir, output, pattern, pushToast, sizePct, sysErr, sysOn, tracks]);
+  }, [camera, corner, encoder, fps, mic, outDir, output, pattern, pushToast, sizePct, sysErr, sysOn, tracks]);
 
   // Contagem regressiva: o usuário precisa de tempo pra sair do LocalRecord e
   // ir pra janela que ele vai demonstrar.
@@ -526,6 +518,11 @@ export default function App() {
   const stop = async () => {
     setPhase("stopping");
     try {
+      // A câmera do overlay sai de cena JÁ: parado, ela não tem por que ficar
+      // acesa em cima da tela do usuário. A janela de anotação continua armada
+      // se o usuário a tinha armado por conta própria — quem decide isso é o
+      // controle dele, não a gravação.
+      if (isTauri) await emit("annot-camera", null);
       const done = await invoke<RecordDone>("rec_stop");
       // Ordem das mensagens: primeiro os avisos (contexto), depois onde o
       // arquivo ficou (a informação que o usuário foi buscar).

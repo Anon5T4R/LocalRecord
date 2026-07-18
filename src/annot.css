@@ -148,3 +148,17 @@ body,
   font-weight: 400;
   font-size: 15px;
 }
+
+/* A câmera desenhada nesta janela — o `ddagrab` a captura junto com a tela, que
+   é como ela entra no vídeo desde a v0.7.0 (antes era uma entrada do ffmpeg, e
+   duas capturas no mesmo processo derrubavam o fps; ver args.ts).
+
+   `pointer-events: none` mesmo com a caneta ligada: a câmera é decoração, e
+   clicar nela tem que riscar a tela como em qualquer outro lugar. */
+.annot-cam {
+  position: absolute;
+  object-fit: cover;
+  border-radius: 10px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}

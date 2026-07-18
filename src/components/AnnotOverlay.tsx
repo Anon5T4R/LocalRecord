@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { cameraBox, type Corner } from "../lib/args";
 import {
   COLORS,
   eraseAt,
@@ -43,6 +44,16 @@ export default function AnnotOverlay() {
   const [typing, setTyping] = useState<Pt | null>(null);
   const [draft, setDraft] = useState("");
   const [bar, setBar] = useState({ x: 24, y: 24 });
+  // A câmera vive AQUI desde a v0.7.0. Ela não passa mais pelo ffmpeg: esta
+  // janela já fica por cima da tela, então o `ddagrab` a captura junto — de
+  // graça, do mesmo jeito que já captura os riscos da caneta.
+  //
+  // O motivo é medido: duas capturas ao vivo no mesmo processo ffmpeg derrubam a
+  // gravação de 30 pra 10 fps (ver `args.ts`). Aqui o ffmpeg volta a ter uma
+  // captura só, e a câmera fica por conta do webview, que já sabia exibi-la.
+  const [cam, setCam] = useState<{ id: string; corner: Corner; sizePct: number } | null>(null);
+  const [camAspect, setCamAspect] = useState(16 / 9);
+  const camRef = useRef<HTMLVideoElement>(null);
 
   // O traço em curso vive num ref, não no state: um `setState` por evento de
   // mouse (dezenas por segundo) faria a caneta arrastar atrás do cursor.
@@ -139,6 +150,46 @@ export default function AnnotOverlay() {
       for (const p of un) void p.then((f) => f());
     };
   }, []);
+
+  // Config da câmera, mandada pela janela principal (mesma origem, evento do
+  // Tauri). Chega quando a gravação começa e some quando ela para.
+  useEffect(() => {
+    if (!isTauri) return;
+    const un = listen<{ id: string; corner: Corner; sizePct: number } | null>(
+      "annot-camera",
+      (e) => setCam(e.payload),
+    );
+    return () => {
+      void un.then((f) => f());
+    };
+  }, []);
+
+  // A câmera ao vivo. Mesmo cuidado do preview da janela principal: soltar o
+  // aparelho quando ele não é mais necessário, senão a webcam fica acesa sem
+  // ninguém olhando — e um aparelho com dois donos não funciona pra ninguém.
+  useEffect(() => {
+    let stream: MediaStream | null = null;
+    let alive = true;
+    if (!cam?.id) {
+      if (camRef.current) camRef.current.srcObject = null;
+      return;
+    }
+    navigator.mediaDevices
+      .getUserMedia({ video: { deviceId: { exact: cam.id } } })
+      .then((s) => {
+        if (!alive) {
+          for (const tr of s.getTracks()) tr.stop();
+          return;
+        }
+        stream = s;
+        if (camRef.current) camRef.current.srcObject = s;
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+      if (stream) for (const tr of stream.getTracks()) tr.stop();
+    };
+  }, [cam?.id]);
 
   // Rede de segurança do teclado. Com a caixinha aberta, tecla que chegue na
   // JANELA e não no campo ainda entra no texto.
@@ -290,6 +341,29 @@ export default function AnnotOverlay() {
         onPointerUp={onUp}
         onPointerCancel={onUp}
       />
+
+      {cam && (
+        <video
+          ref={camRef}
+          className="annot-cam"
+          autoPlay
+          playsInline
+          muted
+          // O áudio do microfone é gravado pelo Rust (WASAPI); deixar este
+          // elemento com som devolveria o próprio áudio pelos alto-falantes.
+          onLoadedMetadata={(e) => {
+            const v = e.currentTarget;
+            if (v.videoWidth > 0 && v.videoHeight > 0) setCamAspect(v.videoWidth / v.videoHeight);
+          }}
+          style={cameraBox(
+            cam.corner,
+            cam.sizePct,
+            window.innerWidth,
+            window.innerHeight,
+            camAspect,
+          )}
+        />
+      )}
 
       {typing && (
         <input

@@ -22,73 +22,6 @@ export type Grabber = "ddagrab" | "gdigrab" | "x11grab";
  *  em `-encoders` não prova que o hardware existe (ver record.rs). */
 export type Encoder = "h264_nvenc" | "h264_qsv" | "h264_amf" | "libx264";
 
-/** Um modo que a câmera oferece de verdade (vem do `camera_modes` do Rust,
- *  que roda `-list_options true` no dispositivo). */
-export interface CamMode {
-  width: number;
-  height: number;
-  fps: number;
-  vcodec: string | null;
-  pixelFormat: string | null;
-}
-
-export interface CameraSpec {
-  /** Id CRU do dispositivo, como o ffmpeg quer (`video=<id>` no dshow). */
-  id: string;
-  corner: Corner;
-  /** Largura da câmera em % da largura da TELA (o preview manda este número). */
-  sizePct: number;
-  /** Modo escolhido. `null` = não deu pra enumerar; aí o dshow decide (o
-   *  comportamento até a v0.4.1, que é justamente o que quebrava). */
-  mode?: CamMode | null;
-}
-
-/** Largura de tela assumida pra converter `sizePct` em pixels quando se escolhe
- *  o modo. 1920 cobre o caso comum e errar aqui só muda a folga: a conta existe
- *  pra não capturar 1080p da webcam pra desenhar um quadradinho de 460 px. */
-const TELA_REF_W = 1920;
-
-/**
- * Escolhe o modo da câmera. Regra, na ordem:
- *
- *  1. **Tem que dar o fps pedido.** Foi o achado dos testes reais: a webcam
- *     oferecia 1920x1080 CRU a 5 fps, o dshow escolheu esse, e a gravação
- *     INTEIRA desabou pra 2,7 fps — a tela também, porque o `overlay` anda no
- *     passo da entrada mais lenta. Medi que o grafo e o encoder aguentam 29,6
- *     fps; quem não aguentava era o modo do dispositivo.
- *  2. **Largura suficiente pro PiP.** A câmera aparece com `sizePct` da largura
- *     da tela; capturar muito acima disso é jogar banda USB e CPU fora pra
- *     depois reduzir no `scale2ref`.
- *  3. **O menor que sobrar** — e, no empate, comprimido (mjpeg) na frente do
- *     cru: é o que cabe no barramento.
- *
- * Sem nenhum modo que sirva, devolve `null` e o ffmpeg segue escolhendo — pior
- * que escolher certo, melhor que recusar a gravar.
- */
-export function pickCamMode(modes: CamMode[], targetFps: number, sizePct: number): CamMode | null {
-  const precisa = Math.round((TELA_REF_W * Math.min(60, Math.max(5, sizePct))) / 100);
-  const servem = modes.filter((m) => m.fps >= targetFps && m.width >= precisa);
-  // Nenhum dá o fps E a largura: relaxa a largura antes do fps. Um PiP um pouco
-  // menos nítido é invisível no vídeo final; metade dos quadros não é.
-  let pool = servem.length > 0 ? servem : modes.filter((m) => m.fps >= targetFps);
-
-  // Nenhum modo alcança o alvo — a webcam simples do mundo real. Escolher o
-  // MELHOR que ela tem é muito melhor que devolver `null`: sem modo explícito
-  // quem decide é o dshow, e foi ele que escolhia 1080p a 5 fps. Uma câmera de
-  // 15 fps deve gravar a 15, não desandar a gravação inteira.
-  if (pool.length === 0 && modes.length > 0) {
-    const teto = Math.max(...modes.map((m) => m.fps));
-    pool = modes.filter((m) => m.fps === teto);
-  }
-  if (pool.length === 0) return null;
-
-  return pool.slice().sort((a, b) => {
-    const area = a.width * a.height - b.width * b.height;
-    if (area !== 0) return area;
-    return (a.vcodec ? 0 : 1) - (b.vcodec ? 0 : 1);
-  })[0];
-}
-
 /** O áudio do sistema NÃO é uma entrada de dispositivo do ffmpeg: é PCM cru que
  *  o Rust captura por WASAPI loopback e despeja num named pipe (ver
  *  `src-tauri/src/sysaudio.rs`). Aqui só entra o endereço do cano e o formato.
@@ -111,7 +44,6 @@ export interface RecordSpec {
   platform: Platform;
   grabber: Grabber;
   fps: number;
-  camera: CameraSpec | null;
   /** Id do microfone, ou null pra gravar sem mic. No Linux é o que vai pro
    *  `-f pulse`; no Windows é só rótulo, porque quem captura é o `micAudio`. */
   mic: string | null;
@@ -137,18 +69,26 @@ const TRACK_SYS = "Áudio do sistema";
 /** Margem da câmera até a borda, em pixels do vídeo final. */
 const MARGIN = 16;
 
-/** Posição do overlay por canto. `W`/`H` = tela, `w`/`h` = câmera já escalada. */
-function overlayXY(corner: Corner): string {
-  switch (corner) {
-    case "tl":
-      return `${MARGIN}:${MARGIN}`;
-    case "tr":
-      return `W-w-${MARGIN}:${MARGIN}`;
-    case "bl":
-      return `${MARGIN}:H-h-${MARGIN}`;
-    case "br":
-      return `W-w-${MARGIN}:H-h-${MARGIN}`;
-  }
+/** Onde a câmera fica na tela, em pixels — a mesma conta que o `overlay` do
+ *  ffmpeg fazia até a v0.6.3, agora usada pra posicionar o `<video>` na janela
+ *  de anotação (que é quem desenha a câmera desde a v0.7.0).
+ *
+ *  Continua função PURA e testada pelo mesmo motivo de antes: é a diferença
+ *  entre a câmera no canto certo e a câmera cortada pela borda, e "abrir o app e
+ *  ver" não garante isso a cada mudança. */
+export function cameraBox(
+  corner: Corner,
+  sizePct: number,
+  screenW: number,
+  screenH: number,
+  aspect: number,
+): { left: number; top: number; width: number; height: number } {
+  const width = Math.round((screenW * Math.min(60, Math.max(5, sizePct))) / 100);
+  // A altura sai do aspecto REAL da câmera; derivar da tela esticaria a imagem.
+  const height = Math.round(width / (aspect > 0 ? aspect : 16 / 9));
+  const left = corner === "tl" || corner === "bl" ? MARGIN : screenW - width - MARGIN;
+  const top = corner === "tl" || corner === "tr" ? MARGIN : screenH - height - MARGIN;
+  return { left, top, width, height };
 }
 
 /** Args de ENTRADA da tela + o começo da cadeia de filtros que ela precisa.
@@ -241,43 +181,9 @@ export function buildRecordArgs(s: RecordSpec): string[] {
   args.push(...screen.args);
 
   let next = 1;
-  const camIdx = s.camera ? next++ : -1;
   const micIdx = s.mic ? next++ : -1;
   const sysIdx = s.sysAudio ? next++ : -1;
 
-  if (s.camera) {
-    if (s.platform === "windows") {
-      // `-rtbufsize`: sem isso o dshow enche o buffer e derruba quadro
-      // ("real-time buffer full") em máquina ocupada — que é o caso normal
-      // de quem está gravando um tutorial.
-      //
-      // Tudo isto vai ANTES do `-i`: são opções de ABERTURA do dispositivo.
-      //
-      // O `-framerate` sozinho (v0.4.0) não bastou. Nos testes reais o dshow
-      // escolheu 1920x1080 CRU, que a webcam só entrega a 5 fps, e a gravação
-      // inteira desabou junto — o `overlay` anda no passo da entrada mais lenta,
-      // então a TELA também caiu pra 2,7 fps. O log mostrava o buffer da câmera
-      // enchendo até 96 %.
-      //
-      // `-video_size` e o codec/pixel format do modo escolhido são o que tira a
-      // decisão do dshow e põe em `pickCamMode`, que sabe o que a gravação pediu.
-      const m = s.camera.mode;
-      // O `-framerate` é o do MODO, não o da gravação: pedir 30 numa câmera que
-      // só faz 15 é pedir o impossível, e o dshow reage escolhendo por conta
-      // própria — que é exatamente o bug que este bloco existe pra fechar.
-      const camFps = m ? Math.min(m.fps, s.fps) : s.fps;
-      args.push("-rtbufsize", "128M", "-f", "dshow", "-framerate", String(camFps));
-      if (m) {
-        args.push("-video_size", `${m.width}x${m.height}`);
-        // Um ou outro, nunca os dois: o modo é comprimido OU cru.
-        if (m.vcodec) args.push("-vcodec", m.vcodec);
-        else if (m.pixelFormat) args.push("-pixel_format", m.pixelFormat);
-      }
-      args.push("-i", `video=${s.camera.id}`);
-    } else {
-      args.push("-f", "v4l2", "-i", s.camera.id);
-    }
-  }
   if (s.mic) {
     if (s.platform === "windows") {
       // O microfone entra pelo MESMO caminho do áudio do sistema: PCM cru que o
@@ -347,37 +253,18 @@ export function buildRecordArgs(s: RecordSpec): string[] {
 
   // Grafo de filtros. Sempre nomeado [v] + `-map [v]` pra sair igual nos dois
   // casos (com e sem câmera) — menos caminho pra dar errado.
-  const scr = screen.chain ? `[0:v]${screen.chain}[scr]` : `[0:v]null[scr]`;
-  let graph: string;
-  if (s.camera) {
-    const pct = (Math.min(60, Math.max(5, s.camera.sizePct)) / 100).toFixed(4);
-    // `scale2ref` escala a câmera tomando a TELA como referência: dentro das
-    // expressões, `iw` é a largura da REFERÊNCIA (verificado no ffmpeg real,
-    // não é o que o nome sugere), então `iw*0.25` = 25% da tela. `ow/mdar`
-    // deriva a altura do aspecto ORIGINAL da câmera — sem isso a webcam
-    // esticaria pro aspecto da tela.
-    // O `fps=` DEPOIS do overlay é o que impede a câmera de derrubar a gravação
-    // inteira. Sem ele, o framesync do overlay ESPERA o par de quadros das duas
-    // fontes — e elas têm relógios independentes (a tela é um filtro-fonte
-    // puxado pelo grafo; a câmera chega no ritmo do dispositivo). O resultado
-    // medido nesta máquina, gravando 10 s a 30 fps (alvo 300 quadros):
-    //
-    //   tela sozinha ....................................... 298
-    //   câmera sozinha ..................................... 297
-    //   as duas, com overlay (o grafo até a v0.6.1) ........ 102
-    //   câmera na linha mas FORA do grafo .................. 280
-    //   as duas, com overlay + `fps=` na saída .............. 300
-    //
-    // A quarta linha é a que aponta o culpado: com a câmera aberta e ignorada
-    // não há problema; o custo aparece quando o overlay precisa PAREAR as duas.
-    // Com `fps=` o framesync passa a repetir o último quadro da câmera em vez de
-    // esperar por ele, e a saída anda no relógio da tela.
-    graph =
-      `${scr};[${camIdx}:v][scr]scale2ref=w=iw*${pct}:h=ow/mdar[cam][scr2];` +
-      `[scr2][cam]overlay=${overlayXY(s.camera.corner)},fps=${s.fps},format=yuv420p[v]`;
-  } else {
-    graph = `${scr};[scr]format=yuv420p[v]`;
-  }
+  // A câmera NÃO entra aqui desde a v0.7.0, e isso é o conserto de um gargalo
+  // medido, não uma simplificação. Duas capturas ao vivo no MESMO processo
+  // ffmpeg se atrapalham: a tela sozinha dá 30 fps, a câmera sozinha dá 30, e as
+  // duas juntas caem pra 10 — enquanto a MESMA câmera capturada em outro
+  // processo deixa a tela intacta (298 de 300 quadros). Nenhuma opção de
+  // framesync, timestamp ou buffer chegou perto de resolver.
+  //
+  // Agora a câmera é desenhada na janela de anotação, que já fica por cima da
+  // tela — e o `ddagrab` a captura junto, de graça, exatamente como já acontece
+  // com os riscos da caneta. O ffmpeg volta a ter UMA captura só.
+  const graph = screen.chain ? `[0:v]${screen.chain},format=yuv420p[v]` : `[0:v]format=yuv420p[v]`;
+
   const audio = buildAudio(micIdx, sysIdx, s.audioTracks);
   // O grafo é UMA string só: o áudio entra no mesmo `-filter_complex` do vídeo.
   args.push("-filter_complex", audio.chain ? `${graph};${audio.chain}` : graph, "-map", "[v]");

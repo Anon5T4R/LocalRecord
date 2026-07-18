@@ -1,11 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   buildAudio,
+  cameraBox,
   buildRecordArgs,
   buildRemuxArgs,
   expandPattern,
-  pickCamMode,
-  type CamMode,
   type RecordSpec,
   type SysAudioSpec,
 } from "../args";
@@ -15,7 +14,6 @@ const base: RecordSpec = {
   platform: "windows",
   grabber: "ddagrab",
   fps: 30,
-  camera: null,
   mic: null,
   sysAudio: null,
   audioTracks: "mixed",
@@ -43,49 +41,27 @@ describe("buildRecordArgs", () => {
   it("só tela (ddagrab): baixa o quadro da GPU e sai em MKV", () => {
     expect(buildRecordArgs(base)).toEqual([
       "-f", "lavfi", "-i", "ddagrab=output_idx=0:framerate=30",
-      "-filter_complex", "[0:v]hwdownload,format=bgra[scr];[scr]format=yuv420p[v]",
+      "-filter_complex", "[0:v]hwdownload,format=bgra,format=yuv420p[v]",
       "-map", "[v]",
       "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
       "-f", "matroska", "C:/v/take.mkv",
     ]);
   });
 
-  it("tela + câmera num canto: overlay posicionado e câmera escalada pela tela", () => {
-    const args = buildRecordArgs({
-      ...base,
-      camera: { id: "Integrated Camera", corner: "br", sizePct: 25 },
-    });
-    expect(args).toEqual([
-      "-f", "lavfi", "-i", "ddagrab=output_idx=0:framerate=30",
-      "-rtbufsize", "128M", "-f", "dshow", "-framerate", "30", "-i", "video=Integrated Camera",
-      "-filter_complex",
-      "[0:v]hwdownload,format=bgra[scr];" +
-        "[1:v][scr]scale2ref=w=iw*0.2500:h=ow/mdar[cam][scr2];" +
-        "[scr2][cam]overlay=W-w-16:H-h-16,fps=30,format=yuv420p[v]",
-      "-map", "[v]",
-      "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-      "-f", "matroska", "C:/v/take.mkv",
-    ]);
-  });
 
-  it("tela + câmera + mic: o mic é a entrada 2 e é dela que sai o áudio", () => {
+  it("tela + mic por cano: o mic é a entrada 1", () => {
     const args = buildRecordArgs({
       ...base,
-      camera: { id: "Integrated Camera", corner: "tl", sizePct: 20 },
       mic: "Microfone (Realtek(R) Audio)",
       micAudio: MIC,
     });
     expect(args).toEqual([
       "-f", "lavfi", "-i", "ddagrab=output_idx=0:framerate=30",
-      "-rtbufsize", "128M", "-f", "dshow", "-framerate", "30", "-i", "video=Integrated Camera",
       "-f", "s16le", "-ar", "44100", "-ac", "2", "-thread_queue_size", "1024",
       "-i", "\\.\pipe\localrecord-mic-4242",
-      "-filter_complex",
-      "[0:v]hwdownload,format=bgra[scr];" +
-        "[1:v][scr]scale2ref=w=iw*0.2000:h=ow/mdar[cam][scr2];" +
-        "[scr2][cam]overlay=16:16,fps=30,format=yuv420p[v]",
+      "-filter_complex", "[0:v]hwdownload,format=bgra,format=yuv420p[v]",
       "-map", "[v]",
-      "-map", "2:a", "-c:a", "aac", "-b:a", "160k",
+      "-map", "1:a", "-c:a", "aac", "-b:a", "160k",
       "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
       "-f", "matroska", "C:/v/take.mkv",
     ]);
@@ -103,7 +79,7 @@ describe("buildRecordArgs", () => {
     const args = buildRecordArgs({ ...base, grabber: "gdigrab" });
     expect(args).toEqual([
       "-f", "gdigrab", "-framerate", "30", "-i", "desktop",
-      "-filter_complex", "[0:v]null[scr];[scr]format=yuv420p[v]",
+      "-filter_complex", "[0:v]format=yuv420p[v]",
       "-map", "[v]",
       "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
       "-f", "matroska", "C:/v/take.mkv",
@@ -117,37 +93,16 @@ describe("buildRecordArgs", () => {
       ...base,
       platform: "linux",
       grabber: "x11grab",
-      camera: { id: "/dev/video0", corner: "tr", sizePct: 25 },
       mic: "default",
     });
     const line = args.join(" ");
     expect(line).toContain("-f x11grab -framerate 30 -i :0.0");
-    expect(line).toContain("-f v4l2 -i /dev/video0");
     expect(line).toContain("-f pulse -i default");
     expect(line).not.toContain("dshow");
     expect(line).not.toContain("rtbufsize");
   });
 
-  it("cada canto tem sua expressão de overlay", () => {
-    const corner = (c: "tl" | "tr" | "bl" | "br") =>
-      buildRecordArgs({ ...base, camera: { id: "C", corner: c, sizePct: 25 } })
-        .join(" ")
-        .match(/overlay=([^,]+),/)![1];
-    expect(corner("tl")).toBe("16:16");
-    expect(corner("tr")).toBe("W-w-16:16");
-    expect(corner("bl")).toBe("16:H-h-16");
-    expect(corner("br")).toBe("W-w-16:H-h-16");
-  });
 
-  it("tamanho da câmera é limitado (0% ou 100% não são layout)", () => {
-    const pct = (p: number) =>
-      buildRecordArgs({ ...base, camera: { id: "C", corner: "br", sizePct: p } })
-        .join(" ")
-        .match(/w=iw\*([\d.]+):/)![1];
-    expect(pct(0)).toBe("0.0500");
-    expect(pct(999)).toBe("0.6000");
-    expect(pct(25)).toBe("0.2500");
-  });
 
   it("áudio do sistema entra por named pipe, no formato que a placa deu", () => {
     const args = buildRecordArgs({ ...base, sysAudio: SYS });
@@ -155,7 +110,7 @@ describe("buildRecordArgs", () => {
       "-f", "lavfi", "-i", "ddagrab=output_idx=0:framerate=30",
       "-f", "s16le", "-ar", "48000", "-ac", "2", "-thread_queue_size", "1024",
       "-i", "\\\\.\\pipe\\localrecord-sysaudio-4242",
-      "-filter_complex", "[0:v]hwdownload,format=bgra[scr];[scr]format=yuv420p[v]",
+      "-filter_complex", "[0:v]hwdownload,format=bgra,format=yuv420p[v]",
       "-map", "[v]",
       "-map", "1:a", "-c:a", "aac", "-b:a", "160k",
       "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
@@ -210,16 +165,17 @@ describe("buildRecordArgs", () => {
     expect(line).not.toContain("amix");
   });
 
-  it("tela + câmera + mic + sistema: cada entrada no seu índice", () => {
-    // O erro clássico: índice cravado. Com câmera, o mic vira 2 e o pipe 3.
+  it("tela + mic + sistema: cada entrada no seu índice", () => {
+    // O erro clássico: índice cravado. A câmera saiu do ffmpeg na v0.7.0, então
+    // o mic é 1 e o cano do sistema é 2 — se alguém recravar 2 e 3, o `-map`
+    // aponta pra entrada que não existe e o ffmpeg morre na largada.
     const line = buildRecordArgs({
       ...base,
-      camera: { id: "Cam", corner: "br", sizePct: 25 },
       mic: "Mic",
       micAudio: MIC,
       sysAudio: SYS,
     }).join(" ");
-    expect(line).toContain("[2:a][3:a]amix=");
+    expect(line).toContain("[1:a][2:a]amix=");
   });
 
   it("mic sem cano cai no dshow com as mitigacoes, NAO fica sem microfone", () => {
@@ -300,116 +256,7 @@ describe("expandPattern", () => {
   });
 });
 
-describe("modo da câmera", () => {
-  it("fixa o framerate da câmera no mesmo da tela", () => {
-    // B7 dos testes reais: sem `-framerate`, o dshow escolhe o modo sozinho e
-    // uma câmera que oferece 30 e 10 fps pode entregar os 10 — arrastando a
-    // gravação inteira pro ritmo dela.
-    const args = buildRecordArgs({ ...base, fps: 60, camera: { id: "Cam", corner: "br", sizePct: 25 } });
-    const i = args.indexOf("dshow");
-    expect(args.slice(i + 1, i + 4)).toEqual(["-framerate", "60", "-i"]);
-  });
 
-  it("não mexe na câmera do Linux (v4l2 não tem esse problema)", () => {
-    const args = buildRecordArgs({ ...base, platform: "linux", grabber: "x11grab", camera: { id: "Cam", corner: "br", sizePct: 25 } });
-    expect(args).toContain("v4l2");
-    expect(args.filter((a) => a === "-framerate")).toHaveLength(1); // só o do x11grab
-  });
-});
-
-describe("pickCamMode — o achado dos testes reais de 2026-07-18", () => {
-  // Os modos típicos de uma webcam integrada. O do meio é o vilão: 1080p cru
-  // que só entrega 5 fps, e era o que o dshow escolhia sozinho.
-  const MODOS: CamMode[] = [
-    { width: 640, height: 480, fps: 30, vcodec: null, pixelFormat: "yuyv422" },
-    { width: 1920, height: 1080, fps: 5, vcodec: null, pixelFormat: "yuyv422" },
-    { width: 1280, height: 720, fps: 30, vcodec: "mjpeg", pixelFormat: null },
-  ];
-
-  it("nunca escolhe um modo que não dá o fps pedido", () => {
-    // A regra que existe pra impedir 2,7 fps: o 1080p a 5 fps está fora,
-    // por maior e mais nítido que seja.
-    expect(pickCamMode(MODOS, 30, 24)?.fps).toBe(30);
-    expect(pickCamMode(MODOS, 30, 24)?.height).not.toBe(1080);
-  });
-
-  it("escolhe o menor que ainda cobre o PiP", () => {
-    // 24% de 1920 = ~460px: o 640x480 basta e é o mais barato dos que servem.
-    expect(pickCamMode(MODOS, 30, 24)).toMatchObject({ width: 640, height: 480 });
-    // PiP grande (50% = 960px) não cabe no 640; sobe pro 1280 mjpeg.
-    expect(pickCamMode(MODOS, 30, 50)).toMatchObject({ width: 1280, vcodec: "mjpeg" });
-  });
-
-  it("abre mão da largura antes de abrir mão do fps", () => {
-    // 60% = 1152px, e nenhum modo de 30fps chega lá. Prefere o maior... não:
-    // prefere manter o fps e aceitar menos nitidez — PiP menos nítido some no
-    // vídeo, metade dos quadros não.
-    const m = pickCamMode(MODOS, 30, 60);
-    expect(m?.fps).toBe(30);
-  });
-
-  it("camera que nao alcanca o alvo entrega o MELHOR que tem", () => {
-    // O caso da webcam simples: alvo 60, teto 30. Devolver null deixaria o
-    // dshow escolher — e foi ele que escolhia 1080p a 5 fps. Melhor gravar a
-    // 30 do que deixar o palpite de volta.
-    const m = pickCamMode(MODOS, 60, 24);
-    expect(m?.fps).toBe(30);
-  });
-
-  it("so devolve null quando nao ha modo NENHUM", () => {
-    expect(pickCamMode([], 30, 24)).toBeNull();
-  });
-
-  it("o -framerate segue o MODO, nao o alvo da gravacao", () => {
-    // Pedir 60 numa camera de 30 e pedir o impossivel, e o dshow reage
-    // escolhendo por conta propria. A tela continua no alvo; so a camera cede.
-    const mode = pickCamMode(MODOS, 60, 24)!;
-    const args = buildRecordArgs({
-      ...base,
-      fps: 60,
-      camera: { id: "Cam", corner: "br", sizePct: 24, mode },
-    });
-    const d = args.indexOf("dshow");
-    expect(args.slice(d, args.indexOf("-i", d)).join(" ")).toContain("-framerate 30");
-    // A tela NAO cede junto: ela e capaz de 60.
-    expect(args.join(" ")).toContain("framerate=60");
-  });
-
-  it("o modo escolhido vira args de ABERTURA, antes do -i", () => {
-    const mode = pickCamMode(MODOS, 30, 24)!;
-    const args = buildRecordArgs({
-      ...base,
-      camera: { id: "Integrated Camera", corner: "br", sizePct: 24, mode },
-    });
-    // Do `dshow` ate o `-i` DELE: o primeiro `-i` da linha e o da tela.
-    const d = args.indexOf("dshow");
-    const abertura = args.slice(d, args.indexOf("-i", d)).join(" ");
-    expect(abertura).toContain("-video_size 640x480");
-    expect(abertura).toContain("-pixel_format yuyv422");
-    expect(abertura).toContain("-framerate 30");
-    // Modo cru não pode levar `-vcodec` junto: são alternativas.
-    expect(abertura).not.toContain("-vcodec");
-  });
-
-  it("modo comprimido usa -vcodec e não -pixel_format", () => {
-    const mode = MODOS[2];
-    const line = buildRecordArgs({
-      ...base,
-      camera: { id: "Cam", corner: "br", sizePct: 24, mode },
-    }).join(" ");
-    expect(line).toContain("-vcodec mjpeg");
-    expect(line).not.toContain("-pixel_format");
-  });
-
-  it("sem modo, os args ficam como eram (o dshow escolhe)", () => {
-    const line = buildRecordArgs({
-      ...base,
-      camera: { id: "Cam", corner: "br", sizePct: 24, mode: null },
-    }).join(" ");
-    expect(line).not.toContain("-video_size");
-    expect(line).toContain("-framerate 30 -i video=Cam");
-  });
-});
 
 describe("captura de audio por dshow — o gargalo medido em 2026-07-18", () => {
   it("o microfone leva os ajustes que o mantem fora do caminho do video", () => {
@@ -430,26 +277,32 @@ describe("captura de audio por dshow — o gargalo medido em 2026-07-18", () => 
   });
 });
 
-describe("o fps na saida do overlay — o gargalo da camera, medido em 2026-07-18", () => {
-  it("existe SEMPRE que ha camera, e segue o alvo da gravacao", () => {
-    // Regressao cara: sem este `fps=`, o framesync do overlay espera o par de
-    // quadros de duas fontes com relogios independentes e a gravacao inteira cai
-    // de 30 pra 10 fps. Medido: 102/300 sem, 300/300 com.
-    for (const alvo of [24, 30, 60]) {
-      const line = buildRecordArgs({
-        ...base,
-        fps: alvo,
-        camera: { id: "Cam", corner: "br", sizePct: 25 },
-      }).join(" ");
-      expect(line).toContain(`,fps=${alvo},format=yuv420p[v]`);
-    }
+
+describe("cameraBox — a camera saiu do ffmpeg e virou posicao na tela (v0.7.0)", () => {
+  // A conta e a mesma que o `overlay` do ffmpeg fazia; mudou so quem a usa.
+  // Continua testada porque e a diferenca entre a camera no canto certo e a
+  // camera cortada pela borda.
+  const W = 1920, H = 1080, A = 16 / 9;
+
+  it("cada canto respeita a margem de 16px", () => {
+    expect(cameraBox("tl", 25, W, H, A)).toMatchObject({ left: 16, top: 16 });
+    expect(cameraBox("tr", 25, W, H, A)).toMatchObject({ top: 16 });
+    expect(cameraBox("br", 25, W, H, A).left + cameraBox("br", 25, W, H, A).width).toBe(W - 16);
+    expect(cameraBox("bl", 25, W, H, A).left).toBe(16);
+    expect(cameraBox("bl", 25, W, H, A).top + cameraBox("bl", 25, W, H, A).height).toBe(H - 16);
   });
 
-  it("sem camera NAO entra — nao ha o que parear", () => {
-    // O `fps` custa uma passada a mais no grafo; poe-lo onde nao ha framesync
-    // seria trabalho por nada.
-    const line = buildRecordArgs(base).join(" ");
-    expect(line).toContain("[scr]format=yuv420p[v]");
-    expect(line).not.toContain("fps=30,format");
+  it("tamanho e limitado (0% ou 100% nao sao layout)", () => {
+    expect(cameraBox("br", 0, W, H, A).width).toBe(Math.round(W * 0.05));
+    expect(cameraBox("br", 999, W, H, A).width).toBe(Math.round(W * 0.6));
+    expect(cameraBox("br", 25, W, H, A).width).toBe(480);
+  });
+
+  it("a altura sai do aspecto REAL da camera, nao do da tela", () => {
+    // Webcam 4:3 num monitor 16:9: derivar a altura da tela esticaria a imagem.
+    const b = cameraBox("br", 25, W, H, 4 / 3);
+    expect(b.height).toBe(Math.round(b.width / (4 / 3)));
+    // Aspecto invalido nao vira divisao por zero nem altura negativa.
+    expect(cameraBox("br", 25, W, H, 0).height).toBeGreaterThan(0);
   });
 });
