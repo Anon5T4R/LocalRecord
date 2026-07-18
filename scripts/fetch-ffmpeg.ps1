@@ -31,7 +31,8 @@ $ProgressPreference = "SilentlyContinue"
 # `sha256sum` e trocar as constantes aqui e no par (.ps1/.sh). Nunca `latest`,
 # nunca uma diária.
 # ---------------------------------------------------------------------------
-$ffTag = "autobuild-2026-06-30-13-34"
+# Tag do upstream de onde este binario veio (proveniencia; a URL usa o espelho).
+$ffUpstreamTag = "autobuild-2026-06-30-13-34"
 $ffAsset = "ffmpeg-n8.1.2-21-gce3c09c101-win64-gpl-8.1.zip"
 $ffSha256 = "682361e32c9631caec09e5d9f09077101c9ed90c14e275f62014fefa6d397990"
 
@@ -44,7 +45,7 @@ if ((Test-Path (Join-Path $ffDir "ffmpeg.exe")) -and (Test-Path (Join-Path $ffDi
     exit 0
 }
 
-$url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/$ffTag/$ffAsset"
+$url = "https://github.com/Anon5T4R/Local-runtimes/releases/download/v1/$ffAsset"
 Write-Host "Baixando $url ..."
 $zip = Join-Path $env:TEMP "ffmpeg-win64-gpl.zip"
 Invoke-WebRequest -Uri $url -OutFile $zip

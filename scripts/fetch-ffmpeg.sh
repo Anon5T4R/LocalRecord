@@ -20,7 +20,8 @@ set -euo pipefail
 # sobrevivem (ver o comentario longo no .ps1). Fixar numa diaria = 404 futuro.
 # PRA ATUALIZAR: trocar as constantes aqui E no .ps1, sempre juntos.
 # ---------------------------------------------------------------------------
-FF_TAG="autobuild-2026-06-30-13-34"
+# Tag do upstream de onde este binario veio (proveniencia; a URL usa o espelho).
+FF_UPSTREAM_TAG="autobuild-2026-06-30-13-34"
 FF_ASSET="ffmpeg-n8.1.2-21-gce3c09c101-linux64-gpl-8.1.tar.xz"
 FF_SHA256="0ba73bbd93472c7622f6dec26d334c5e62e64d858d072490b2844320970456cd"
 
@@ -33,7 +34,7 @@ if [ -f "$FF_DIR/ffmpeg" ] && [ -f "$FF_DIR/ffprobe" ]; then
   exit 0
 fi
 
-URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/$FF_TAG/$FF_ASSET"
+URL="https://github.com/Anon5T4R/Local-runtimes/releases/download/v1/$FF_ASSET"
 echo "Baixando $URL ..."
 curl -fsSL --retry 3 --retry-delay 2 "$URL" -o /tmp/ffmpeg-static.tar.xz
 
