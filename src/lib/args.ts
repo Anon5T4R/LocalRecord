@@ -112,8 +112,13 @@ export interface RecordSpec {
   grabber: Grabber;
   fps: number;
   camera: CameraSpec | null;
-  /** Id do microfone, ou null pra gravar sem mic. */
+  /** Id do microfone, ou null pra gravar sem mic. No Linux é o que vai pro
+   *  `-f pulse`; no Windows é só rótulo, porque quem captura é o `micAudio`. */
   mic: string | null;
+  /** No Windows o microfone entra por WASAPI + cano, igual ao áudio do sistema.
+   *  `null` = sem microfone, ou Linux (lá o `-f pulse` do ffmpeg é direto e não
+   *  tem o problema do dshow). */
+  micAudio?: SysAudioSpec | null;
   /** Áudio do sistema, ou null pra não gravar o que o computador toca. */
   sysAudio: SysAudioSpec | null;
   audioTracks: AudioTracks;
@@ -275,35 +280,53 @@ export function buildRecordArgs(s: RecordSpec): string[] {
   }
   if (s.mic) {
     if (s.platform === "windows") {
-      // MEDIDO em 2026-07-18 (mesma máquina, mesmo ffmpeg): a captura de áudio
-      // por dshow é o gargalo da gravação inteira — ela derruba o VÍDEO junto.
-      // Com a tela sozinha dá 30 fps; acrescentar só o microfone leva a 10.
+      // O microfone entra pelo MESMO caminho do áudio do sistema: PCM cru que o
+      // Rust captura por WASAPI e despeja num cano. Ele saía por
+      // `-f dshow -i audio=…` e essa entrada derrubava a gravação INTEIRA, vídeo
+      // junto — medido na mesma máquina, gravando 10 s a 30 fps (alvo 300):
       //
-      //   entrada de áudio                     quadros em 10s (alvo 300)
-      //   nenhuma / sintética (lavfi)                     298
-      //   s16le por cano (o áudio do sistema)             298
-      //   dshow mic USB, como era até aqui                101
-      //   dshow mic USB + os dois ajustes abaixo          222
-      //   dshow mic Realtek, como era até aqui             26
-      //   dshow mic Realtek + os dois ajustes             123
+      //   sem áudio nenhum .................... 298
+      //   por cano (s16le) .................... 298
+      //   dshow, microfone USB ................ 101
+      //   dshow, microfone Realtek ............. 26
       //
-      // `-audio_buffer_size` em ms é o que mais pesa (o padrão do dshow entrega
-      // o áudio em blocos grandes e o ffmpeg espera por eles); `-thread_queue_size`
-      // impede o resto de travar enquanto isso. Não é conserto completo — o
-      // conserto é tirar o microfone do dshow e capturá-lo por WASAPI, como o
-      // áudio do sistema já faz (a linha do cano acima prova que aquele caminho
-      // não custa nada). Isto aqui é o ganho de 2x a 5x que dá pra ter agora.
-      args.push(
-        "-audio_buffer_size", "10",
-        "-thread_queue_size", "1024",
-        "-rtbufsize", "128M",
-        "-f", "dshow",
-        "-i", `audio=${s.mic}`,
-      );
+      // O sintoma aparecia no fps do VÍDEO, que é o último lugar onde se procura
+      // um problema de áudio. Detalhes em `sysaudio.rs` (`mic_pipe_path`).
+      //
+      // Sem `micAudio` a captura por WASAPI não subiu — e isso ACONTECE: na
+      // máquina onde tudo isto foi medido, o `IAudioClient::Initialize` da
+      // ENTRADA não responde (o mesmo endpoint que já recusava a saída, ver o
+      // topo de `sysaudio.rs`). Ali o dshow é o único caminho que abre o
+      // microfone de verdade.
+      //
+      // Então o dshow continua existindo como plano B, com as mitigações
+      // medidas: `-audio_buffer_size 10` levou o mesmo teste de 101 pra 222
+      // quadros (de 300). Não é o caminho bom, é o caminho que funciona quando o
+      // bom não sobe — gravar SEM microfone seria pior que gravar devagar.
+      if (s.micAudio) {
+        args.push(
+          "-f", "s16le",
+          "-ar", String(s.micAudio.sampleRate),
+          "-ac", String(s.micAudio.channels),
+          "-thread_queue_size", "1024",
+          "-i", s.micAudio.pipePath,
+        );
+      } else {
+        args.push(
+          "-audio_buffer_size", "10",
+          "-thread_queue_size", "1024",
+          "-rtbufsize", "128M",
+          "-f", "dshow",
+          "-i", `audio=${s.mic}`,
+        );
+      }
     } else {
+      // Linux: `-f pulse` direto, sem intermediário. O gargalo medido é do
+      // dshow, que não existe aqui.
       args.push("-f", "pulse", "-i", s.mic);
     }
   }
+
   if (s.sysAudio) {
     // PCM cru do WASAPI loopback chegando por um named pipe. Detalhes que
     // importam:

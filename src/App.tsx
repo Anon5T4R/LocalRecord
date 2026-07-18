@@ -420,6 +420,27 @@ export default function App() {
         }
       }
 
+      // O MICROFONE, no Windows, pelo mesmo caminho: WASAPI + cano. Ele entrava
+      // por `-f dshow -i audio=…` e essa entrada derrubava a gravação inteira,
+      // o vídeo junto (os números estão em `sysaudio.rs`). No Linux o `-f pulse`
+      // do ffmpeg continua direto — o gargalo é do dshow.
+      let micAudio: SysAudioSpec | null = null;
+      if (mic && platform === "windows") {
+        try {
+          const info = await invoke<SysAudioInfo>("mic_audio_start", { deviceId: mic });
+          micAudio = {
+            pipePath: info.pipePath,
+            sampleRate: info.sampleRate,
+            channels: info.channels,
+          };
+        } catch (e) {
+          // Não é hipótese: na máquina onde tudo isto foi medido o WASAPI de
+          // ENTRADA não abre. O `args.ts` cai no dshow com as mitigações — mais
+          // lento, porém gravando. O aviso existe pra ser lento e SABIDO.
+          pushToast("info", t("rec.micSlowPath", { error: String(e) }));
+        }
+      }
+
       const spec: RecordSpec = {
         platform,
         grabber: GRABBER,
@@ -428,6 +449,7 @@ export default function App() {
           ? { id: camera, corner, sizePct, mode: pickCamMode(camModes, fps, sizePct) }
           : null,
         mic: mic || null,
+        micAudio,
         sysAudio,
         audioTracks: tracks,
         encoder: encoder || "libx264",

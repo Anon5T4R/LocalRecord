@@ -579,6 +579,7 @@ pub fn rec_start(
     app: tauri::AppHandle,
     state: State<'_, RecState>,
     sys: State<'_, SysAudioState>,
+    mic: State<'_, crate::sysaudio::MicAudioState>,
     opts: RecordOpts,
 ) -> Result<RecordingInfo, String> {
     {
@@ -609,6 +610,7 @@ pub fn rec_start(
             // lento — gdigrab custa CPU e não pega janelas com overlay).
             let Some(fb) = opts.fallback_args.clone() else {
                 crate::sysaudio::stop_feed(&sys);
+                crate::sysaudio::stop_feed(&mic.0);
                 return Err(first);
             };
             let _ = app.emit("rec-notice", first.clone());
@@ -616,9 +618,17 @@ pub fn rec_start(
             // named pipe vive enquanto o ffmpeg que o abriu vive). Sem refazer,
             // o plano B nasceria sem o que abrir e falharia por um motivo que
             // nada tem a ver com o gdigrab.
+            // Os DOIS canos morrem com a 1ª tentativa (cada um vive enquanto
+            // vive o ffmpeg que o abriu), então os dois precisam voltar.
             if let Err(e) = crate::sysaudio::restart_feed(&app, &sys) {
                 crate::sysaudio::stop_feed(&sys);
+                crate::sysaudio::stop_feed(&mic.0);
                 return Err(format!("{} | e o canal do áudio do sistema não voltou: {}", first, e));
+            }
+            if let Err(e) = crate::sysaudio::restart_mic_feed(&app, &mic) {
+                crate::sysaudio::stop_feed(&sys);
+                crate::sysaudio::stop_feed(&mic.0);
+                return Err(format!("{} | e o canal do microfone não voltou: {}", first, e));
             }
             match try_start(
                 &app, &ffmpeg, &fb, &log, opts.target_fps, stopping.clone(), sys_lost.clone(),
@@ -626,6 +636,7 @@ pub fn rec_start(
                 Ok((c, e)) => (c, e, true),
                 Err(second) => {
                     crate::sysaudio::stop_feed(&sys);
+                    crate::sysaudio::stop_feed(&mic.0);
                     return Err(format!("{} | fallback também falhou: {}", first, second));
                 }
             }
@@ -684,6 +695,7 @@ pub fn rec_stop(
     app: tauri::AppHandle,
     state: State<'_, RecState>,
     sys: State<'_, SysAudioState>,
+    mic: State<'_, crate::sysaudio::MicAudioState>,
 ) -> Result<RecordDone, String> {
     // Sai do estado JÁ: um segundo clique no stop não pode pegar o mesmo Child.
     let mut rec = state
@@ -704,9 +716,11 @@ pub fn rec_stop(
     // daqui, cano quebrado é o encerramento acontecendo, não falha.
     rec.stopping.store(true, Ordering::SeqCst);
     crate::sysaudio::signal_feed_stop(&sys);
+    crate::sysaudio::signal_feed_stop(&mic.0);
     let graceful = graceful_stop(&mut rec.child);
     let sys_audio_error = crate::sysaudio::feed_error(&sys);
     crate::sysaudio::stop_feed(&sys);
+    crate::sysaudio::stop_feed(&mic.0);
 
     if !rec.mkv.exists() {
         let tail = rec.err.lock().map(|v| v.iter().cloned().collect::<Vec<_>>().join("\n")).unwrap_or_default();
@@ -820,7 +834,7 @@ pub fn rec_status(state: State<'_, RecState>) -> bool {
 /// Faz só o `q` + espera (o contêiner fecha e o MKV fica íntegro). NÃO remuxa:
 /// remux de uma gravação longa seguraria o app fechando por vários segundos, e
 /// o MKV já é um arquivo válido — o usuário abre normalmente.
-pub fn stop_on_exit(state: &RecState, sys: &SysAudioState) {
+pub fn stop_on_exit(state: &RecState, sys: &SysAudioState, mic: &crate::sysaudio::MicAudioState) {
     if let Ok(mut guard) = state.inner.lock() {
         if let Some(rec) = guard.as_mut() {
             graceful_stop(&mut rec.child);
@@ -831,6 +845,9 @@ pub fn stop_on_exit(state: &RecState, sys: &SysAudioState) {
     // fecha sem gravação nenhuma, pode haver feed vivo de um start que deu
     // errado no meio — o canal e as threads dele não podem sobreviver ao app.
     crate::sysaudio::stop_feed(sys);
+    // O microfone também vive num feed próprio desde que saiu do dshow: dois
+    // canos, dois desligamentos.
+    crate::sysaudio::stop_feed(&mic.0);
 }
 
 #[cfg(test)]

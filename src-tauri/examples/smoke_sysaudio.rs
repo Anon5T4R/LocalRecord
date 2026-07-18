@@ -75,7 +75,7 @@ fn size_of(p: &Path) -> u64 {
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.len() < 5 {
-        eprintln!("uso: smoke_sysaudio [--synthetic] <ffmpeg> <args.txt> <seg> <mkv> [remux.txt] [mp4]");
+        eprintln!("uso: smoke_sysaudio [--synthetic|--mic] <ffmpeg> <args.txt> <seg> <mkv> [remux.txt] [mp4]");
         std::process::exit(2);
     }
 
@@ -86,7 +86,14 @@ fn main() {
     //    gerador de tom — o MESMO pipe + pacer + ffmpeg + stop, provados numa
     //    máquina cujo endpoint de áudio não hospeda stream (ver sysaudio/win.rs).
     let synthetic = a.get(1).map(|s| s == "--synthetic").unwrap_or(false);
-    let shift = if synthetic { 1 } else { 0 };
+    // `--mic` exercita a OUTRA ponta: o microfone, que desde a v0.6.0 entra pelo
+    // mesmo cano em vez de `-f dshow -i audio=…`. A troca foi feita porque o
+    // dshow de áudio derrubava a gravação inteira (o vídeo caía de 30 pra 10
+    // fps, e pra 2,6 com outro microfone). Este caminho precisa ser provado
+    // NÃO-MUDO: se ele falhar calado, o take sai sem microfone nenhum — que é
+    // pior que o problema que ele veio resolver.
+    let mic = a.get(1).map(|s| s == "--mic").unwrap_or(false);
+    let shift = if synthetic || mic { 1 } else { 0 };
     let ffmpeg = PathBuf::from(&a[1 + shift]);
     let raw_args = read_args(&a[2 + shift]);
     let secs: u64 = a[3 + shift].parse().expect("segundos");
@@ -95,6 +102,22 @@ fn main() {
     let (feed, info) = if synthetic {
         println!("== sys_audio_start SINTÉTICO (prova sem WASAPI) ==");
         SysAudioFeed::start_synthetic().expect("gerador sintético")
+    } else if mic {
+        println!("== mic_audio_start (WASAPI, entrada) ==");
+        // O dispositivo vem do ambiente pra dar pra exercitar um microfone
+        // ESPECÍFICO: numa máquina cujo microfone padrão não abre (acontece), o
+        // `None` provaria só que o padrão está quebrado — não que o caminho está.
+        let dev = std::env::var("MIC_DEV").ok().filter(|s| !s.is_empty());
+        if let Some(d) = dev.as_ref() {
+            println!("dispositivo pedido: {}", d);
+        }
+        match SysAudioFeed::start_mic(None, dev) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("SEM MICROFONE: {}", e);
+                std::process::exit(1);
+            }
+        }
     } else {
         println!("== sys_audio_start (WASAPI loopback) ==");
         match SysAudioFeed::start(None, None) {

@@ -24,7 +24,7 @@ use tauri::Manager;
 use annot::AnnotState;
 use ffmpeg::FfState;
 use record::RecState;
-use sysaudio::{MonitorState, SysAudioState};
+use sysaudio::{MicAudioState, MonitorState, SysAudioState};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -51,6 +51,7 @@ pub fn run() {
         .manage(RecState::default())
         .manage(AnnotState::default())
         .manage(SysAudioState::default())
+        .manage(MicAudioState::default())
         .manage(MonitorState::default())
         .invoke_handler(tauri::generate_handler![
             ffmpeg::ffmpeg_ok,
@@ -60,6 +61,8 @@ pub fn run() {
             sysaudio::sys_audio_probe,
             sysaudio::sys_audio_start,
             sysaudio::sys_audio_stop,
+            sysaudio::mic_audio_start,
+            sysaudio::mic_audio_stop,
             sysaudio::audio_monitor_start,
             sysaudio::audio_monitor_stop,
             record::rec_start,
@@ -96,7 +99,11 @@ pub fn run() {
                 // o app não pode custar o take do usuário. Só depois o `kill_all`
                 // varre o resto (remux/sonda), que é descartável — matar aqueles
                 // não perde nada, matar a gravação perderia o trailer do arquivo.
-                record::stop_on_exit(&app.state::<RecState>(), &app.state::<SysAudioState>());
+                record::stop_on_exit(
+                    &app.state::<RecState>(),
+                    &app.state::<SysAudioState>(),
+                    &app.state::<MicAudioState>(),
+                );
                 ffmpeg::kill_all(&app.state::<FfState>());
             }
         });

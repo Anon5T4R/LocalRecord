@@ -115,6 +115,30 @@ pub fn pipe_path_for(pid: u32) -> String {
     format!(r"\\.\pipe\localrecord-sysaudio-{}", pid)
 }
 
+/// O canal do MICROFONE. Nome próprio porque agora existem DOIS canos vivos ao
+/// mesmo tempo — um por ponta do som.
+///
+/// O microfone saiu do dshow por uma razão MEDIDA, não estética: a captura de
+/// áudio por dshow derruba o pipeline inteiro. Mesma máquina, mesmo ffmpeg,
+/// gravando 10 s a 30 fps (alvo 300 quadros):
+///
+/// ```text
+///   sem áudio nenhum                    298
+///   áudio por cano (s16le)              298
+///   dshow, microfone USB                101
+///   dshow, microfone Realtek             26
+/// ```
+///
+/// O sintoma aparecia no fps do VÍDEO — o último lugar onde se procura um
+/// problema de áudio. Foram quatro rodadas de investigação até cair a ficha.
+pub fn mic_pipe_path() -> String {
+    mic_pipe_path_for(std::process::id())
+}
+
+pub fn mic_pipe_path_for(pid: u32) -> String {
+    format!(r"\\.\pipe\localrecord-mic-{}", pid)
+}
+
 // ---------------------------------------------------------------------------
 // Regras puras do escritor paceado (testadas sem placa de som nenhuma)
 // ---------------------------------------------------------------------------
@@ -215,6 +239,16 @@ impl SysAudioFeed {
     ) -> Result<(Self, SysAudioInfo), String> {
         Err(PENDENTE.to_string())
     }
+    /// No Linux o microfone continua entrando por `-f pulse` direto no ffmpeg —
+    /// o gargalo medido é do dshow, que é coisa de Windows. Este stub existe só
+    /// pra o comando compartilhado compilar (o mesmo motivo do `emit_sink` não
+    /// ser gateado; ver a nota lá em cima).
+    pub fn start_mic(
+        _sink: Option<LevelSink>,
+        _device_id: Option<String>,
+    ) -> Result<(Self, SysAudioInfo), String> {
+        Err(PENDENTE.to_string())
+    }
     pub fn stop(&self) {}
     pub fn error(&self) -> Option<String> {
         None
@@ -271,6 +305,41 @@ pub fn sys_audio_stop(state: tauri::State<'_, SysAudioState>) {
     stop_feed(&state);
 }
 
+/// O feed do MICROFONE. Estado separado do de cima porque os dois vivem ao mesmo
+/// tempo — o `State` do Tauri é indexado por TIPO, então precisa ser um tipo
+/// próprio. Por dentro é o mesmo `SysAudioState`, e de propósito: todas as
+/// funções de ciclo de vida (`stop_feed`, `signal_feed_stop`, `feed_error`,
+/// `restart_feed`) valem para os dois sem uma linha duplicada.
+#[derive(Default)]
+pub struct MicAudioState(pub SysAudioState);
+
+/// Liga a captura do microfone por WASAPI e devolve formato + caminho do cano.
+///
+/// Gêmeo do `sys_audio_start`, pelas mesmas razões: o formato tem que sair do
+/// dispositivo no MOMENTO da gravação, e o cano precisa existir antes de o
+/// ffmpeg tentar abri-lo.
+///
+/// Por que o microfone deixou de entrar por `-f dshow`: ver `mic_pipe_path`. Em
+/// resumo, dshow de áudio derrubava a gravação inteira, o vídeo junto.
+#[tauri::command(async)]
+pub fn mic_audio_start(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, MicAudioState>,
+    device_id: Option<String>,
+) -> Result<SysAudioInfo, String> {
+    stop_feed(&state.0);
+    let (feed, info) = SysAudioFeed::start_mic(Some(emit_sink(&app)), device_id.clone())?;
+    if let Ok(mut g) = state.0.inner.lock() {
+        *g = Some(Live { feed, device_id });
+    }
+    Ok(info)
+}
+
+#[tauri::command(async)]
+pub fn mic_audio_stop(state: tauri::State<'_, MicAudioState>) {
+    stop_feed(&state.0);
+}
+
 pub fn stop_feed(state: &SysAudioState) {
     if let Ok(mut g) = state.inner.lock() {
         if let Some(l) = g.take() {
@@ -319,6 +388,28 @@ pub fn restart_feed(app: &tauri::AppHandle, state: &SysAudioState) -> Result<(),
     stop_feed(state);
     let (feed, _) = SysAudioFeed::start(Some(emit_sink(app)), device_id.clone())?;
     if let Ok(mut g) = state.inner.lock() {
+        *g = Some(Live { feed, device_id });
+    }
+    Ok(())
+}
+
+/// O mesmo `restart_feed`, para o cano do microfone. Existe pela mesma razão: o
+/// cano vive enquanto vive o ffmpeg que o abriu, então uma 1ª tentativa que
+/// falhou leva o canal junto e o plano B nasceria sem o que abrir.
+pub fn restart_mic_feed(
+    app: &tauri::AppHandle,
+    state: &MicAudioState,
+) -> Result<(), String> {
+    let device_id = {
+        let Ok(g) = state.0.inner.lock() else { return Err("estado corrompido".into()) };
+        match g.as_ref() {
+            Some(l) => l.device_id.clone(),
+            None => return Ok(()), // não havia microfone: nada a refazer
+        }
+    };
+    stop_feed(&state.0);
+    let (feed, _) = SysAudioFeed::start_mic(Some(emit_sink(app)), device_id.clone())?;
+    if let Ok(mut g) = state.0.inner.lock() {
         *g = Some(Live { feed, device_id });
     }
     Ok(())

@@ -23,6 +23,15 @@ const base: RecordSpec = {
   outPath: "C:/v/take.mkv",
 };
 
+/** O cano do MICROFONE (`mic_audio_start`). Desde a v0.6.0 o mic entra por aqui
+ *  no Windows, e nao mais por `-f dshow -i audio=` — ver `mic_pipe_path` no Rust
+ *  pelos numeros que motivaram a troca. */
+const MIC: SysAudioSpec = {
+  pipePath: "\\.\pipe\localrecord-mic-4242",
+  sampleRate: 44100,
+  channels: 2,
+};
+
 /** O que o `sys_audio_start` do Rust devolve: o cano e o formato REAL da placa. */
 const SYS: SysAudioSpec = {
   pipePath: "\\\\.\\pipe\\localrecord-sysaudio-4242",
@@ -64,12 +73,13 @@ describe("buildRecordArgs", () => {
       ...base,
       camera: { id: "Integrated Camera", corner: "tl", sizePct: 20 },
       mic: "Microfone (Realtek(R) Audio)",
+      micAudio: MIC,
     });
     expect(args).toEqual([
       "-f", "lavfi", "-i", "ddagrab=output_idx=0:framerate=30",
       "-rtbufsize", "128M", "-f", "dshow", "-framerate", "30", "-i", "video=Integrated Camera",
-      "-audio_buffer_size", "10", "-thread_queue_size", "1024",
-      "-rtbufsize", "128M", "-f", "dshow", "-i", "audio=Microfone (Realtek(R) Audio)",
+      "-f", "s16le", "-ar", "44100", "-ac", "2", "-thread_queue_size", "1024",
+      "-i", "\\.\pipe\localrecord-mic-4242",
       "-filter_complex",
       "[0:v]hwdownload,format=bgra[scr];" +
         "[1:v][scr]scale2ref=w=iw*0.2000:h=ow/mdar[cam][scr2];" +
@@ -84,7 +94,7 @@ describe("buildRecordArgs", () => {
   it("sem câmera, o mic vira a entrada 1 (o índice acompanha as fontes)", () => {
     // Regressão: se o índice do mic fosse fixo em 2, gravar "tela + mic" mapearia
     // uma entrada que não existe e o ffmpeg morreria na largada.
-    const args = buildRecordArgs({ ...base, mic: "Mic" });
+    const args = buildRecordArgs({ ...base, mic: "Mic", micAudio: MIC });
     expect(args).toContain("-map");
     expect(args.join(" ")).toContain("-map 1:a");
   });
@@ -156,7 +166,7 @@ describe("buildRecordArgs", () => {
   it("o PCM NUNCA vai pro stdin — é lá que mora o `q` do stop gracioso", () => {
     // A regressão que mataria o app: ocupar o stdin com áudio faria TODO take
     // terminar em kill(), ou seja, sem trailer. O canal do áudio é outro.
-    const line = buildRecordArgs({ ...base, mic: "Mic", sysAudio: SYS }).join(" ");
+    const line = buildRecordArgs({ ...base, mic: "Mic", micAudio: MIC, sysAudio: SYS }).join(" ");
     expect(line).toContain("-i \\\\.\\pipe\\localrecord-sysaudio-4242");
     expect(line).not.toContain("-i pipe:");
     expect(line).not.toContain("-i -");
@@ -173,10 +183,10 @@ describe("buildRecordArgs", () => {
   });
 
   it("mic + sistema mixados: uma faixa só, e nenhum dos dois perde volume", () => {
-    const args = buildRecordArgs({ ...base, mic: "Mic", sysAudio: SYS });
+    const args = buildRecordArgs({ ...base, mic: "Mic", micAudio: MIC, sysAudio: SYS });
     const line = args.join(" ");
     // mic = entrada 1, pipe = entrada 2 (sem câmera).
-    expect(line).toContain("-audio_buffer_size 10 -thread_queue_size 1024 -rtbufsize 128M -f dshow -i audio=Mic");
+    expect(line).toContain("-f s16le -ar 44100 -ac 2 -thread_queue_size 1024");
     expect(line).toContain(
       "[1:a][2:a]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[a]",
     );
@@ -190,6 +200,7 @@ describe("buildRecordArgs", () => {
     const line = buildRecordArgs({
       ...base,
       mic: "Mic",
+      micAudio: MIC,
       sysAudio: SYS,
       audioTracks: "separate",
     }).join(" ");
@@ -205,9 +216,22 @@ describe("buildRecordArgs", () => {
       ...base,
       camera: { id: "Cam", corner: "br", sizePct: 25 },
       mic: "Mic",
+      micAudio: MIC,
       sysAudio: SYS,
     }).join(" ");
     expect(line).toContain("[2:a][3:a]amix=");
+  });
+
+  it("mic sem cano cai no dshow com as mitigacoes, NAO fica sem microfone", () => {
+    // Nao e caso hipotetico: na maquina onde tudo isto foi medido o WASAPI de
+    // ENTRADA nao abre (o Initialize nao responde). Se o fallback nao existisse,
+    // o take sairia sem microfone nenhum — pior que o problema que a troca veio
+    // resolver. E o indice tem que continuar batendo.
+    const line = buildRecordArgs({ ...base, mic: "Mic", micAudio: null, sysAudio: SYS }).join(" ");
+    expect(line).toContain("-f dshow -i audio=Mic");
+    expect(line).toContain("-audio_buffer_size 10");
+    // mic = entrada 1, cano do sistema = 2.
+    expect(line).toContain("[1:a][2:a]amix=");
   });
 
   it("faixa separada só existe com as duas fontes (uma fonte é uma faixa)", () => {
@@ -393,8 +417,9 @@ describe("captura de audio por dshow — o gargalo medido em 2026-07-18", () => 
     // acrescentar o microfone dshow derruba pra 10. Com estes dois ajustes vai
     // pra 22. Se alguem remover, a gravacao inteira volta a travar — e o
     // sintoma aparece no VIDEO, que e o ultimo lugar onde se procura.
-    const line = buildRecordArgs({ ...base, mic: "Mic" }).join(" ");
-    expect(line).toContain("-audio_buffer_size 10");
+    const line = buildRecordArgs({ ...base, mic: "Mic", micAudio: MIC }).join(" ");
+    // Nao ha mais NENHUM dshow de audio na linha — e esse e o ponto.
+    expect(line).not.toContain("dshow");
     expect(line).toContain("-thread_queue_size 1024");
   });
 

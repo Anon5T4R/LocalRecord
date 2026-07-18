@@ -30,8 +30,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::{
-    name_matches, plan_chunk, samples_due, sys_pipe_path, to_i16, AudioFormat, AudioLevel,
-    LevelSink, SysAudioInfo,
+    mic_pipe_path, name_matches, plan_chunk, samples_due, sys_pipe_path, to_i16, AudioFormat,
+    AudioLevel, LevelSink, SysAudioInfo,
 };
 use crate::devices::Device;
 
@@ -366,8 +366,35 @@ impl SysAudioFeed {
         sink: Option<LevelSink>,
         device_id: Option<String>,
     ) -> Result<(Self, SysAudioInfo), String> {
+        Self::start_side(Which::Output(device_id), sys_pipe_path(), "system", sink)
+    }
+
+    /// O MICROFONE pelo mesmo caminho do áudio do sistema: WASAPI + cano.
+    ///
+    /// Não é simetria por elegância — é o conserto de um gargalo medido. O
+    /// microfone entrava por `-f dshow -i audio=…` e essa entrada derrubava a
+    /// gravação inteira, vídeo junto (ver `mic_pipe_path`, que tem os números).
+    /// O cano já era o caminho do áudio do sistema e custa zero: 298 de 300
+    /// quadros, o mesmo que não ter áudio nenhum.
+    pub fn start_mic(
+        sink: Option<LevelSink>,
+        device_id: Option<String>,
+    ) -> Result<(Self, SysAudioInfo), String> {
+        Self::start_side(Which::Input(device_id), mic_pipe_path(), "mic", sink)
+    }
+
+    /// O corpo comum das duas pontas. A ÚNICA diferença entre elas são os três
+    /// primeiros argumentos: de onde o som vem, pra qual cano vai, e que nome o
+    /// medidor usa. Todo o resto — ordem de subida, teto de fila, pacer, stop —
+    /// é idêntico, e duplicar isso seria criar duas versões pra divergirem.
+    fn start_side(
+        which: Which,
+        pipe_name: String,
+        level_target: &str,
+        sink: Option<LevelSink>,
+    ) -> Result<(Self, SysAudioInfo), String> {
         let shared = Arc::new(Shared::new(Some(Mutex::new(VecDeque::new()))));
-        let (fmt, name) = match spawn_capture(Which::Output(device_id), shared.clone()) {
+        let (fmt, name) = match spawn_capture(which, shared.clone()) {
             Ok(v) => v,
             Err(e) => {
                 shared.stop.store(true, Ordering::Relaxed);
@@ -380,7 +407,6 @@ impl SysAudioFeed {
             Ordering::Relaxed,
         );
 
-        let pipe_name = sys_pipe_path();
         let server = match pipe::PipeServer::create(&pipe_name) {
             Ok(s) => s,
             Err(e) => {
@@ -394,7 +420,7 @@ impl SysAudioFeed {
         let w_conn = connected.clone();
         std::thread::spawn(move || pacer(server, w_shared, fmt, w_conn));
         if let Some(sink) = sink {
-            level_pump(sink, "system".to_string(), shared.clone());
+            level_pump(sink, level_target.to_string(), shared.clone());
         }
 
         let info = SysAudioInfo {
