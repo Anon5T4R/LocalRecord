@@ -356,9 +356,25 @@ export function buildRecordArgs(s: RecordSpec): string[] {
     // não é o que o nome sugere), então `iw*0.25` = 25% da tela. `ow/mdar`
     // deriva a altura do aspecto ORIGINAL da câmera — sem isso a webcam
     // esticaria pro aspecto da tela.
+    // O `fps=` DEPOIS do overlay é o que impede a câmera de derrubar a gravação
+    // inteira. Sem ele, o framesync do overlay ESPERA o par de quadros das duas
+    // fontes — e elas têm relógios independentes (a tela é um filtro-fonte
+    // puxado pelo grafo; a câmera chega no ritmo do dispositivo). O resultado
+    // medido nesta máquina, gravando 10 s a 30 fps (alvo 300 quadros):
+    //
+    //   tela sozinha ....................................... 298
+    //   câmera sozinha ..................................... 297
+    //   as duas, com overlay (o grafo até a v0.6.1) ........ 102
+    //   câmera na linha mas FORA do grafo .................. 280
+    //   as duas, com overlay + `fps=` na saída .............. 300
+    //
+    // A quarta linha é a que aponta o culpado: com a câmera aberta e ignorada
+    // não há problema; o custo aparece quando o overlay precisa PAREAR as duas.
+    // Com `fps=` o framesync passa a repetir o último quadro da câmera em vez de
+    // esperar por ele, e a saída anda no relógio da tela.
     graph =
       `${scr};[${camIdx}:v][scr]scale2ref=w=iw*${pct}:h=ow/mdar[cam][scr2];` +
-      `[scr2][cam]overlay=${overlayXY(s.camera.corner)},format=yuv420p[v]`;
+      `[scr2][cam]overlay=${overlayXY(s.camera.corner)},fps=${s.fps},format=yuv420p[v]`;
   } else {
     graph = `${scr};[scr]format=yuv420p[v]`;
   }

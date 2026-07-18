@@ -61,7 +61,7 @@ describe("buildRecordArgs", () => {
       "-filter_complex",
       "[0:v]hwdownload,format=bgra[scr];" +
         "[1:v][scr]scale2ref=w=iw*0.2500:h=ow/mdar[cam][scr2];" +
-        "[scr2][cam]overlay=W-w-16:H-h-16,format=yuv420p[v]",
+        "[scr2][cam]overlay=W-w-16:H-h-16,fps=30,format=yuv420p[v]",
       "-map", "[v]",
       "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
       "-f", "matroska", "C:/v/take.mkv",
@@ -83,7 +83,7 @@ describe("buildRecordArgs", () => {
       "-filter_complex",
       "[0:v]hwdownload,format=bgra[scr];" +
         "[1:v][scr]scale2ref=w=iw*0.2000:h=ow/mdar[cam][scr2];" +
-        "[scr2][cam]overlay=16:16,format=yuv420p[v]",
+        "[scr2][cam]overlay=16:16,fps=30,format=yuv420p[v]",
       "-map", "[v]",
       "-map", "2:a", "-c:a", "aac", "-b:a", "160k",
       "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
@@ -427,5 +427,29 @@ describe("captura de audio por dshow — o gargalo medido em 2026-07-18", () => 
     const line = buildRecordArgs({ ...base, platform: "linux", grabber: "x11grab", mic: "default" }).join(" ");
     expect(line).toContain("-f pulse -i default");
     expect(line).not.toContain("-audio_buffer_size");
+  });
+});
+
+describe("o fps na saida do overlay — o gargalo da camera, medido em 2026-07-18", () => {
+  it("existe SEMPRE que ha camera, e segue o alvo da gravacao", () => {
+    // Regressao cara: sem este `fps=`, o framesync do overlay espera o par de
+    // quadros de duas fontes com relogios independentes e a gravacao inteira cai
+    // de 30 pra 10 fps. Medido: 102/300 sem, 300/300 com.
+    for (const alvo of [24, 30, 60]) {
+      const line = buildRecordArgs({
+        ...base,
+        fps: alvo,
+        camera: { id: "Cam", corner: "br", sizePct: 25 },
+      }).join(" ");
+      expect(line).toContain(`,fps=${alvo},format=yuv420p[v]`);
+    }
+  });
+
+  it("sem camera NAO entra — nao ha o que parear", () => {
+    // O `fps` custa uma passada a mais no grafo; poe-lo onde nao ha framesync
+    // seria trabalho por nada.
+    const line = buildRecordArgs(base).join(" ");
+    expect(line).toContain("[scr]format=yuv420p[v]");
+    expect(line).not.toContain("fps=30,format");
   });
 });
