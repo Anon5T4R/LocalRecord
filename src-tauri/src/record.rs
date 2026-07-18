@@ -129,6 +129,24 @@ const TAKE_MIN_RATIO: f64 = 0.25;
 /// Existe porque o `rec_stop` só sabia checar se o remux deu certo — e o remux
 /// de um vídeo com 1 quadro dá certo. Um `-c copy` copia com perfeição um
 /// arquivo quebrado.
+/// **LIMITE CONHECIDO (v0.6.2).** Com câmera, o grafo leva um `fps=` depois do
+/// `overlay` — sem ele o framesync espera o par de quadros das duas fontes e a
+/// gravação inteira cai (102 de 300 quadros medidos; ver `args.ts`). Só que esse
+/// filtro atinge a taxa DUPLICANDO quadros, então um take com câmera sempre sai
+/// com a contagem certa e esta função nunca vai reprovar nada nele.
+///
+/// Fica assim de propósito. As alternativas foram testadas e são piores:
+///
+///  - `dup_frames` do `-progress`: sempre 0. Quem duplica é o FILTRO, e esse
+///    contador é da camada de saída.
+///  - `mpdecimate` pra contar quadros distintos: **inválido**. Ele mede mudança
+///    de CONTEÚDO, não taxa de captura — num take bom com a tela parada achou 39
+///    quadros distintos em 300. Um alarme desses acusaria toda aula falada por
+///    cima de um slide, e alarme que grita falso é alarme desligado.
+///
+/// O que continua valendo: sem câmera, esta checagem funciona inteira; e a morte
+/// da captura (`ACCESS_LOST`) segue detectada pelo stderr em qualquer caso, que
+/// é a falha que realmente destrói o take.
 fn take_degraded(frames: u64, duration_s: f64, target: f64) -> bool {
     // Sem alvo ou take curto demais: não dá pra afirmar nada, e afirmar sem
     // base é o que transforma aviso em ruído. 2s porque abaixo disso o próprio
