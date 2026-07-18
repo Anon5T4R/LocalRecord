@@ -107,6 +107,15 @@ fn main() {
         // O dispositivo vem do ambiente pra dar pra exercitar um microfone
         // ESPECÍFICO: numa máquina cujo microfone padrão não abre (acontece), o
         // `None` provaria só que o padrão está quebrado — não que o caminho está.
+        // ATENÇÃO ao rodar isto: a permissão de microfone do Windows é POR
+        // APLICATIVO. O app empacotado tem; este binário de console, rodado do
+        // shell, normalmente NÃO — e o WASAPI não recusa, ele PENDURA o
+        // `Initialize` até estourar o orçamento. O sintoma é idêntico ao de um
+        // driver quebrado ("o dispositivo não respondeu a tempo"), e foi
+        // exatamente assim que este smoke me fez concluir que o caminho novo não
+        // funcionava, quando na verdade funcionava (o take do João saiu a 30 fps
+        // com o microfone pelo cano). Se der timeout aqui, confira
+        // Privacidade > Microfone antes de suspeitar do código.
         let dev = std::env::var("MIC_DEV").ok().filter(|s| !s.is_empty());
         if let Some(d) = dev.as_ref() {
             println!("dispositivo pedido: {}", d);
