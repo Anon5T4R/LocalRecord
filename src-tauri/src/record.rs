@@ -278,6 +278,8 @@ struct Rec {
     stopping: Arc<AtomicBool>,
     /// O ffmpeg recusou o PCM do cano ENQUANTO ainda se gravava.
     sys_lost: Arc<AtomicBool>,
+    /// O alerta de fps baixo disparou durante a gravação.
+    fps_alerted: Arc<AtomicBool>,
 }
 
 /// Uma gravação por vez (v0.1). O `Option` é o estado inteiro: `None` = parado.
@@ -451,6 +453,7 @@ fn try_start(
     target_fps: Option<f64>,
     stopping: Arc<AtomicBool>,
     sys_lost: Arc<AtomicBool>,
+    fps_alerted: Arc<AtomicBool>,
 ) -> Result<(Child, Arc<Mutex<VecDeque<String>>>), String> {
     let mut child = spawn_ffmpeg(ffmpeg, args)?;
     let stdout = child.stdout.take().ok_or("sem stdout do ffmpeg")?;
@@ -560,6 +563,7 @@ fn try_start(
                         // aviso que importa.
                         if !ja_avisou_fps && fps_degraded(&fps_amostras, alvo) {
                             ja_avisou_fps = true;
+                            fps_alerted.store(true, Ordering::SeqCst);
                             let _ = app_c.emit("rec-fps-low", p.fps.clone());
                         }
                     }
@@ -599,9 +603,11 @@ pub fn rec_start(
 
     let stopping = Arc::new(AtomicBool::new(false));
     let sys_lost = Arc::new(AtomicBool::new(false));
+    let fps_alerted = Arc::new(AtomicBool::new(false));
 
     let (child, err, used_fallback) = match try_start(
         &app, &ffmpeg, &opts.args, &log, opts.target_fps, stopping.clone(), sys_lost.clone(),
+        fps_alerted.clone(),
     ) {
         Ok((c, e)) => (c, e, false),
         Err(first) => {
@@ -632,6 +638,7 @@ pub fn rec_start(
             }
             match try_start(
                 &app, &ffmpeg, &fb, &log, opts.target_fps, stopping.clone(), sys_lost.clone(),
+                fps_alerted.clone(),
             ) {
                 Ok((c, e)) => (c, e, true),
                 Err(second) => {
@@ -653,6 +660,7 @@ pub fn rec_start(
         target_fps: opts.target_fps,
         stopping,
         sys_lost,
+        fps_alerted,
     };
     *state.inner.lock().map_err(|_| "estado corrompido")? = Some(rec);
 
@@ -781,7 +789,14 @@ pub fn rec_stop(
         None => (false, None, None),
     };
 
-    let keep_log = lost || degraded || !graceful || !remuxed || sys_audio_error.is_some();
+    // O alerta ao vivo entra na conta. Sem ele, um take a 10 fps num alvo de 30
+    // saía SEM log — o `take_degraded` é frouxo de propósito (corta em 1/4) e
+    // não pegava. Foi o que aconteceu no take de 2026-07-18 08:12: o app avisou
+    // na tela e não guardou uma linha do porquê, e sem os args não dá pra saber
+    // nem qual modo de câmera foi escolhido.
+    let fps_alerted = rec.fps_alerted.load(Ordering::SeqCst);
+    let keep_log =
+        lost || degraded || fps_alerted || !graceful || !remuxed || sys_audio_error.is_some();
     let log_path = if keep_log {
         Some(rec.log.to_string_lossy().to_string())
     } else {

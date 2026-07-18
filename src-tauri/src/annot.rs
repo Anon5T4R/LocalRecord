@@ -176,7 +176,20 @@ pub fn annot_set_pen(app: AppHandle, on: bool) -> Result<AnnotSnapshot, String> 
 /// original: quem só rabisca nunca perde o foco do que estava fazendo.
 #[tauri::command(async)]
 pub fn annot_focus(app: AppHandle) -> Result<(), String> {
-    window(&app)?.set_focus().map_err(|e| e.to_string())
+    let win = window(&app)?;
+    // SÃO DOIS FOCOS DIFERENTES, e essa distinção derrubou as três primeiras
+    // tentativas de consertar a ferramenta de texto:
+    //
+    //  - `WebviewWindow::set_focus` mexe na JANELA do sistema operacional (no
+    //    Windows, `force_window_active`) — traz pro primeiro plano;
+    //  - `Webview::set_focus` mexe no controle WebView2 DENTRO dela.
+    //
+    // Focar só a janela deixa o navegador embutido sem foco, e aí o `<input>`
+    // que a ferramenta de texto abre mostra o cursor mas não recebe uma tecla
+    // sequer. Era exatamente o relato: "não cria uma textbox digitável".
+    win.set_focus().map_err(|e| e.to_string())?;
+    let webview: &tauri::Webview<_> = win.as_ref();
+    webview.set_focus().map_err(|e| e.to_string())
 }
 
 /// Estado real do overlay — pra UI reconciliar depois de um reload da webview
