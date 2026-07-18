@@ -61,9 +61,26 @@ export default function Preview(props: Props) {
 
   // Um quadro da tela como fundo. Falha aqui não é fatal: o palco continua
   // servindo pra posicionar a câmera, só fica sem a foto atrás.
+  //
+  // Duas coisas que a v0.3 errava e que a `disabled` na lista de dependências
+  // conserta de uma vez:
+  //
+  //  1. **Buscava uma vez só.** A DDA falha de vez em quando (foi o que o
+  //     "Sem prévia da tela" dos testes reais mostrou); sem nova tentativa, o
+  //     palco ficava preto pra sempre naquela sessão. Agora, ao voltar pro
+  //     estado parado, tenta de novo.
+  //  2. **Não sabia da gravação.** Buscar o quadro com a gravação em pé abriria
+  //     uma SEGUNDA sessão de Desktop Duplication disputando com o `ddagrab` do
+  //     ffmpeg — o mesmo tipo de disputa que estragou os takes pela webcam.
   useEffect(() => {
     let url = "";
     let alive = true;
+    // A limpeza da rodada anterior já revogou a URL do blob; deixar o `img`
+    // apontando pra ela renderizaria um ícone de imagem quebrada.
+    if (disabled) {
+      setThumb("");
+      return;
+    }
     invoke<number[]>("rec_screen_thumb", { args: buildThumbArgs(grabber) })
       .then((bytes) => {
         if (!alive) return;
@@ -75,7 +92,7 @@ export default function Preview(props: Props) {
       alive = false;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [grabber]);
+  }, [grabber, disabled]);
 
   // Câmera ao vivo no palco — SÓ enquanto parado.
   //
