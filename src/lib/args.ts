@@ -275,7 +275,31 @@ export function buildRecordArgs(s: RecordSpec): string[] {
   }
   if (s.mic) {
     if (s.platform === "windows") {
-      args.push("-rtbufsize", "128M", "-f", "dshow", "-i", `audio=${s.mic}`);
+      // MEDIDO em 2026-07-18 (mesma máquina, mesmo ffmpeg): a captura de áudio
+      // por dshow é o gargalo da gravação inteira — ela derruba o VÍDEO junto.
+      // Com a tela sozinha dá 30 fps; acrescentar só o microfone leva a 10.
+      //
+      //   entrada de áudio                     quadros em 10s (alvo 300)
+      //   nenhuma / sintética (lavfi)                     298
+      //   s16le por cano (o áudio do sistema)             298
+      //   dshow mic USB, como era até aqui                101
+      //   dshow mic USB + os dois ajustes abaixo          222
+      //   dshow mic Realtek, como era até aqui             26
+      //   dshow mic Realtek + os dois ajustes             123
+      //
+      // `-audio_buffer_size` em ms é o que mais pesa (o padrão do dshow entrega
+      // o áudio em blocos grandes e o ffmpeg espera por eles); `-thread_queue_size`
+      // impede o resto de travar enquanto isso. Não é conserto completo — o
+      // conserto é tirar o microfone do dshow e capturá-lo por WASAPI, como o
+      // áudio do sistema já faz (a linha do cano acima prova que aquele caminho
+      // não custa nada). Isto aqui é o ganho de 2x a 5x que dá pra ter agora.
+      args.push(
+        "-audio_buffer_size", "10",
+        "-thread_queue_size", "1024",
+        "-rtbufsize", "128M",
+        "-f", "dshow",
+        "-i", `audio=${s.mic}`,
+      );
     } else {
       args.push("-f", "pulse", "-i", s.mic);
     }

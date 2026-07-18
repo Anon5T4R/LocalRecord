@@ -68,6 +68,7 @@ describe("buildRecordArgs", () => {
     expect(args).toEqual([
       "-f", "lavfi", "-i", "ddagrab=output_idx=0:framerate=30",
       "-rtbufsize", "128M", "-f", "dshow", "-framerate", "30", "-i", "video=Integrated Camera",
+      "-audio_buffer_size", "10", "-thread_queue_size", "1024",
       "-rtbufsize", "128M", "-f", "dshow", "-i", "audio=Microfone (Realtek(R) Audio)",
       "-filter_complex",
       "[0:v]hwdownload,format=bgra[scr];" +
@@ -175,7 +176,7 @@ describe("buildRecordArgs", () => {
     const args = buildRecordArgs({ ...base, mic: "Mic", sysAudio: SYS });
     const line = args.join(" ");
     // mic = entrada 1, pipe = entrada 2 (sem câmera).
-    expect(line).toContain("-rtbufsize 128M -f dshow -i audio=Mic");
+    expect(line).toContain("-audio_buffer_size 10 -thread_queue_size 1024 -rtbufsize 128M -f dshow -i audio=Mic");
     expect(line).toContain(
       "[1:a][2:a]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[a]",
     );
@@ -383,5 +384,23 @@ describe("pickCamMode — o achado dos testes reais de 2026-07-18", () => {
     }).join(" ");
     expect(line).not.toContain("-video_size");
     expect(line).toContain("-framerate 30 -i video=Cam");
+  });
+});
+
+describe("captura de audio por dshow — o gargalo medido em 2026-07-18", () => {
+  it("o microfone leva os ajustes que o mantem fora do caminho do video", () => {
+    // Nao e cosmetico: MEDIDO na mesma maquina, so a tela da 30 fps e
+    // acrescentar o microfone dshow derruba pra 10. Com estes dois ajustes vai
+    // pra 22. Se alguem remover, a gravacao inteira volta a travar — e o
+    // sintoma aparece no VIDEO, que e o ultimo lugar onde se procura.
+    const line = buildRecordArgs({ ...base, mic: "Mic" }).join(" ");
+    expect(line).toContain("-audio_buffer_size 10");
+    expect(line).toContain("-thread_queue_size 1024");
+  });
+
+  it("no Linux o mic e pulse e nao leva nada disso", () => {
+    const line = buildRecordArgs({ ...base, platform: "linux", grabber: "x11grab", mic: "default" }).join(" ");
+    expect(line).toContain("-f pulse -i default");
+    expect(line).not.toContain("-audio_buffer_size");
   });
 });
