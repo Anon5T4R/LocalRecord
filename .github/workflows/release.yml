@@ -11,6 +11,11 @@ jobs:
       contents: write
     strategy:
       fail-fast: false
+      # Serializa os jobs: os dois tentavam CRIAR o release na mesma tag ao mesmo
+      # tempo e um perdia a corrida (already_exists) sem subir o artefato - mordeu
+      # o LocalData v0.7.0 e o LocalAgenda v0.5.0. Com um job por vez, o primeiro
+      # cria e o segundo anexa. Release ~2x mais lento, mas release nao e hot-path.
+      max-parallel: 1
       matrix:
         include:
           - platform: windows-latest
