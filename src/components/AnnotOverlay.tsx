@@ -52,6 +52,9 @@ export default function AnnotOverlay() {
   // primeiro plano — quando ela vira, o WebView2 devolve o foco pro documento
   // e o campo fica com o cursor piscando sem receber tecla nenhuma.
   const inputRef = useRef<HTMLInputElement>(null);
+  // O `commitText` mais recente, pra rede de segurança do teclado poder chamá-lo
+  // sem depender da ordem em que as constantes deste componente são declaradas.
+  const commitRef = useRef<(() => void) | null>(null);
   const drag = useRef<{ dx: number; dy: number } | null>(null);
 
   /** Redesenha tudo. Objetos → pixels acontece só aqui. */
@@ -137,12 +140,60 @@ export default function AnnotOverlay() {
     };
   }, []);
 
+  // Rede de segurança do teclado. Com a caixinha aberta, tecla que chegue na
+  // JANELA e não no campo ainda entra no texto.
+  //
+  // Existe porque o foco desta janela é um problema real e recorrente: ela nasce
+  // `focus: false`, é transparente, sem decoração e always-on-top, e o WebView2
+  // devolve o foco pro documento quando a janela vira primeiro plano. Foram
+  // quatro tentativas mirando em fazer o `<input>` receber foco; esta para de
+  // depender disso. Se o webview receber a tecla, o texto funciona.
+  //
+  // Só age quando o campo NÃO está com o foco — senão cada tecla entraria duas
+  // vezes.
+  useEffect(() => {
+    if (!typing) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (document.activeElement === inputRef.current) return;
+      if (e.key === "Enter" || e.key === "Escape") {
+        e.preventDefault();
+        // O commit real mora no handler do campo; aqui só se reproduz o efeito.
+        if (e.key === "Escape") {
+          setTyping(null);
+          setDraft("");
+        } else {
+          setDraft((d) => {
+            queueMicrotask(() => commitRef.current?.());
+            return d;
+          });
+        }
+        return;
+      }
+      if (e.key === "Backspace") {
+        e.preventDefault();
+        setDraft((d) => d.slice(0, -1));
+        return;
+      }
+      // Só caractere de verdade: teclas de função e modificadores têm `key` com
+      // mais de um caractere e não podem virar texto na tela do usuário.
+      if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        setDraft((d) => d + e.key);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [typing]);
+
   const at = (e: React.PointerEvent): Pt => ({ x: e.clientX, y: e.clientY });
 
   const onDown = (e: React.PointerEvent) => {
     if (!pen) return;
     const p = at(e);
     if (tool === "text") {
+      // Clicar em outro lugar com uma caixinha aberta COMITA o que estava nela.
+      // É o que o `onBlur` fazia — e o `onBlur` era justamente o problema.
+      if (typing) commitText();
       setTyping(p);
       setDraft("");
       // A janela do overlay nasce `focus: false` (tauri.conf.json) e no Windows
@@ -202,6 +253,8 @@ export default function AnnotOverlay() {
     setDraft("");
   };
 
+  commitRef.current = commitText;
+
   const penOff = () => void invoke("annot_set_pen", { on: false }).catch(() => {});
   const clearAll = () => {
     live.current = null;
@@ -255,7 +308,6 @@ export default function AnnotOverlay() {
               setDraft("");
             }
           }}
-          onBlur={commitText}
         />
       )}
 
