@@ -1,6 +1,6 @@
 [package]
 name = "localrecord"
-version = "0.6.2"
+version = "0.6.3"
 description = "LocalRecord — estúdio de captura de tela 100% offline da suíte Local"
 authors = ["Taylor"]
 edition = "2021"
