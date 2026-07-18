@@ -18,16 +18,45 @@
 //! o cano e o formato só existem em tempo de execução: `__PIPE__`, `__RATE__` e
 //! `__AC__` — trocados aqui pelo que o dispositivo REAL informou.
 
+
+// ---------------------------------------------------------------------------
+// WINDOWS-ONLY, e o gate é obrigatório: este smoke usa `SysAudioFeed::start_synthetic`,
+// que só existe em `sysaudio/win.rs`. O `cargo test` compila os examples em TODAS
+// as plataformas, então sem isto o job Ubuntu do CI quebra com
+// `E0599: no associated function named start_synthetic` — e foi o que aconteceu,
+// derrubando o ci.yml em todo push desde a v0.2.0.
+//
+// É a MESMA armadilha do `emit_sink` (v0.2.1) e a terceira vez que ela morde:
+// código Windows-only compila localmente e só o CI Linux enxerga. A diferença é
+// que ali era código de produção (quebrava o AppImage) e aqui é ferramenta de
+// dev — por isso o `release.yml` passava e só o `ci.yml` reclamava, o que é
+// justamente o jeito mais fácil de não perceber.
+// ---------------------------------------------------------------------------
+
+#[cfg(not(windows))]
+fn main() {
+    eprintln!("smoke_sysaudio: exercita WASAPI loopback — só faz sentido no Windows.");
+}
+
+#[cfg(windows)]
 use std::collections::VecDeque;
+#[cfg(windows)]
 use std::io::{BufRead, BufReader};
+#[cfg(windows)]
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
 use std::process::{Command, Stdio};
+#[cfg(windows)]
 use std::sync::{Arc, Mutex};
+#[cfg(windows)]
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
 use localrecord_lib::record::{graceful_stop, spawn_ffmpeg};
+#[cfg(windows)]
 use localrecord_lib::sysaudio::SysAudioFeed;
 
+#[cfg(windows)]
 fn read_args(path: &str) -> Vec<String> {
     let txt = std::fs::read_to_string(path).expect("ler arquivo de args");
     txt.lines()
@@ -37,10 +66,12 @@ fn read_args(path: &str) -> Vec<String> {
         .collect()
 }
 
+#[cfg(windows)]
 fn size_of(p: &Path) -> u64 {
     std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)
 }
 
+#[cfg(windows)]
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.len() < 5 {
