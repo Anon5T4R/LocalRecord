@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { cameraBox, type Corner } from "../lib/args";
+import { openCamera } from "../lib/camera";
 import {
   COLORS,
   eraseAt,
@@ -174,8 +175,11 @@ export default function AnnotOverlay() {
       if (camRef.current) camRef.current.srcObject = null;
       return;
     }
-    navigator.mediaDevices
-      .getUserMedia({ video: { deviceId: { exact: cam.id } } })
+    // `openCamera` e NÃO `getUserMedia` direto: o id que o app carrega é o nome
+    // do dshow, e o navegador quer um `deviceId` que é outro identificador. Não
+    // há id comum entre os dois mundos — o casamento é por rótulo. Passar o nome
+    // cru aqui foi o que fez a v0.7.0 gravar uma caixa vazia no lugar da câmera.
+    openCamera(cam.id)
       .then((s) => {
         if (!alive) {
           for (const tr of s.getTracks()) tr.stop();

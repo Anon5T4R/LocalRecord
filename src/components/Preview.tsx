@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { openCamera } from "../lib/camera";
 import { buildThumbArgs, type Corner, type Grabber } from "../lib/args";
 import { t } from "../lib/i18n";
 
@@ -26,25 +27,6 @@ interface Props {
   disabled: boolean;
 }
 
-/**
- * Abre a câmera pro preview. O casamento entre o id do dshow e o
- * `MediaDeviceInfo` é por RÓTULO — não existe id comum entre os dois mundos.
- * Os rótulos só aparecem depois que a permissão é dada, daí a ordem: pedir
- * primeiro, escolher depois.
- */
-async function openCamera(id: string): Promise<MediaStream> {
-  const first = await navigator.mediaDevices.getUserMedia({ video: true });
-  const devices = await navigator.mediaDevices.enumerateDevices();
-  const match =
-    devices.find((d) => d.kind === "videoinput" && d.label === id) ??
-    devices.find((d) => d.kind === "videoinput" && d.label.startsWith(id));
-  // A câmera que já abriu é a certa (ou não há como saber): fica essa mesma.
-  if (!match || first.getVideoTracks()[0]?.label === match.label) return first;
-  // Era outra: solta a primeira antes de abrir a segunda — duas câmeras vivas
-  // ao mesmo tempo travam o dispositivo em algumas webcams.
-  for (const tr of first.getTracks()) tr.stop();
-  return navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: match.deviceId } } });
-}
 
 export default function Preview(props: Props) {
   const { grabber, cameraId, corner, sizePct, onCornerChange, disabled } = props;
@@ -96,12 +78,10 @@ export default function Preview(props: Props) {
 
   // Câmera ao vivo no palco — SÓ enquanto parado.
   //
-  // Soltar a webcam ao gravar não é economia: é o ffmpeg que precisa dela. Uma
-  // webcam aberta aqui e pedida lá é o mesmo aparelho com dois donos, e quem
-  // perde é a gravação — a entrada `dshow` fica sem quadro, o `overlay` do
-  // grafo espera por um quadro que não vem e SEGURA o vídeo inteiro. Bate com
-  // o que os testes reais do João mostraram: câmera fora do arquivo, fps no
-  // chão e o `ddagrab` perdendo o acesso, tudo só quando havia câmera ligada.
+  // Soltar a webcam ao gravar continua obrigatório, mas o motivo MUDOU na
+  // v0.7.0: não é mais o ffmpeg que a quer — é a janela de anotação, que passou
+  // a desenhar a câmera (o ffmpeg não a captura mais; ver `args.ts`). O aparelho
+  // segue tendo um dono por vez, só que agora o outro dono é outra janela nossa.
   //
   // O mesmo motivo do medidor de microfone sumir durante a gravação (App.tsx).
   useEffect(() => {
