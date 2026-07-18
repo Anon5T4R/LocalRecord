@@ -39,6 +39,31 @@ const START_PROBE_MS: u64 = 1_500;
 /// Linhas de stderr guardadas pro rabo de erro.
 const ERR_TAIL: usize = 30;
 
+/// Marcadores de "a captura de tela MORREU no meio da gravação".
+///
+/// Existe porque o ffmpeg NÃO aborta quando uma entrada morre: ele reclama uma
+/// vez no stderr e segue gravando as OUTRAS. O resultado é o pior tipo de
+/// arquivo — um take de 2 minutos com áudio perfeito e UM quadro de vídeo, e o
+/// app anunciando "salvo". Foi exatamente o que os testes reais do João
+/// produziram em 2026-07-18 (`docs/planos/localrecord-achados-teste-real.md`).
+///
+/// `887a0026` é o `DXGI_ERROR_ACCESS_LOST` da Desktop Duplication API — o
+/// `ddagrab` perde o acesso e não volta sozinho.
+const CAPTURE_LOST_MARKERS: [&str; 3] = ["AcquireNextFrame failed", "887a0026", "Error during demuxing"];
+
+/// A captura de tela morreu no meio? Procura os marcadores no rabo do stderr.
+fn capture_lost(tail: &str) -> bool {
+    CAPTURE_LOST_MARKERS.iter().any(|m| tail.contains(m))
+}
+
+/// Onde fica o log do ffmpeg de um take: o mesmo caminho do MKV com `.log`.
+///
+/// Ao lado da gravação de propósito — quem for investigar um take estranho acha
+/// o log sem saber onde o app guarda nada.
+fn log_path_for(mkv: &Path) -> PathBuf {
+    mkv.with_extension("log")
+}
+
 #[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordOpts {
@@ -74,6 +99,13 @@ pub struct RecordDone {
     /// usuário PRECISA saber que aquele trecho é silêncio de verdade — descobrir
     /// no play seria a pior hora possível.
     pub sys_audio_error: Option<String>,
+    /// A captura de TELA morreu no meio da gravação (o áudio segue bom, o vídeo
+    /// congela). O usuário precisa saber AGORA — descobrir no play, depois de
+    /// gravar 2 minutos, é a pior hora possível.
+    pub capture_lost: bool,
+    /// Onde ficou o log do ffmpeg, quando ele foi preservado. `None` = o take
+    /// saiu limpo e o log foi apagado (não sujar a pasta de gravações).
+    pub log_path: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -94,6 +126,9 @@ struct Rec {
     mp4: PathBuf,
     remux_args: Vec<String>,
     err: Arc<Mutex<VecDeque<String>>>,
+    /// Log do ffmpeg deste take. Escrito em STREAMING durante a gravação (não
+    /// só no fim): se o app morrer no meio, o log do que aconteceu sobrevive.
+    log: PathBuf,
 }
 
 /// Uma gravação por vez (v0.1). O `Option` é o estado inteiro: `None` = parado.
@@ -263,17 +298,39 @@ fn try_start(
     app: &tauri::AppHandle,
     ffmpeg: &Path,
     args: &[String],
+    log: &Path,
 ) -> Result<(Child, Arc<Mutex<VecDeque<String>>>), String> {
     let mut child = spawn_ffmpeg(ffmpeg, args)?;
     let stdout = child.stdout.take().ok_or("sem stdout do ffmpeg")?;
     let stderr = child.stderr.take().ok_or("sem stderr do ffmpeg")?;
 
-    // Thread do stderr: rabo de erro limitado. Precisa começar JÁ — se ninguém
-    // ler este pipe e ele encher, o ffmpeg trava (gotcha #3).
+    // O log abre em APPEND: quando o ddagrab não sobe e caímos no gdigrab, o
+    // `try_start` roda duas vezes e as duas tentativas têm que ficar no mesmo
+    // arquivo — o motivo da primeira ter falhado é justamente o que se quer ler.
+    // Falhar ao abrir o log NÃO impede gravar: log é diagnóstico, não requisito.
+    let mut sink = std::fs::OpenOptions::new().create(true).append(true).open(log).ok();
+    if let Some(f) = sink.as_mut() {
+        let _ = writeln!(f, "\n===== ffmpeg {} =====", args.join(" "));
+    }
+
+    // Thread do stderr: rabo de erro em memória (pra mensagem imediata) E o log
+    // COMPLETO em disco. Precisa começar JÁ — se ninguém ler este pipe e ele
+    // encher, o ffmpeg trava (gotcha #3).
+    //
+    // Em disco vai tudo, não só as últimas 30 linhas: o erro que interessa
+    // costuma acontecer no COMEÇO (o `AcquireNextFrame failed` do ddagrab sai
+    // uma vez só) e some do rabo depois de dois minutos de aviso de encoder.
     let err: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
     let err_c = err.clone();
     std::thread::spawn(move || {
+        // Re-liga `mut` dentro da thread: a mutabilidade do binding de fora não
+        // atravessa a captura por `move` de forma óbvia, e depender disso é
+        // pedir erro de compilação que só o CI ia mostrar.
+        let mut sink = sink;
         for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if let Some(f) = sink.as_mut() {
+                let _ = writeln!(f, "{}", line);
+            }
             if let Ok(mut v) = err_c.lock() {
                 push_tail(&mut v, line, ERR_TAIL);
             }
@@ -341,7 +398,14 @@ pub fn rec_start(
     }
     let ffmpeg = resolve_bin(&app, FFMPEG_BIN)?;
 
-    let (child, err, used_fallback) = match try_start(&app, &ffmpeg, &opts.args) {
+    // O log nasce ANTES da 1ª tentativa: se nem o ddagrab nem o gdigrab subirem,
+    // o motivo dos dois fica gravado (é o único caso em que não há take pra
+    // olhar depois). Um take anterior com o mesmo nome não deve poluir este.
+    let mkv = PathBuf::from(&opts.mkv_path);
+    let log = log_path_for(&mkv);
+    let _ = std::fs::remove_file(&log);
+
+    let (child, err, used_fallback) = match try_start(&app, &ffmpeg, &opts.args, &log) {
         Ok((c, e)) => (c, e, false),
         Err(first) => {
             // Plano B honesto: só cai no gdigrab se o ddagrab REALMENTE não
@@ -360,7 +424,7 @@ pub fn rec_start(
                 crate::sysaudio::stop_feed(&sys);
                 return Err(format!("{} | e o canal do áudio do sistema não voltou: {}", first, e));
             }
-            match try_start(&app, &ffmpeg, &fb) {
+            match try_start(&app, &ffmpeg, &fb, &log) {
                 Ok((c, e)) => (c, e, true),
                 Err(second) => {
                     crate::sysaudio::stop_feed(&sys);
@@ -370,13 +434,13 @@ pub fn rec_start(
         }
     };
 
-    let mkv = PathBuf::from(&opts.mkv_path);
     let rec = Rec {
         child,
         mkv: mkv.clone(),
         mp4: PathBuf::from(&opts.mp4_path),
         remux_args: opts.remux_args,
         err,
+        log,
     };
     *state.inner.lock().map_err(|_| "estado corrompido")? = Some(rec);
 
@@ -463,6 +527,24 @@ pub fn rec_stop(
     let out = cmd.output().map_err(|e| format!("falha ao rodar ffmpeg: {}", e))?;
 
     let remuxed = out.status.success() && rec.mp4.exists();
+
+    // A captura de tela morreu no meio? O ffmpeg reclama UMA vez no stderr e
+    // segue gravando as outras entradas, então sem esta checagem o take sai com
+    // áudio perfeito, vídeo congelado e a UI dizendo "salvo".
+    let tail = rec.err.lock().map(|v| v.iter().cloned().collect::<Vec<_>>().join("\n")).unwrap_or_default();
+    let lost = capture_lost(&tail);
+
+    // O log fica quando ALGO deu errado; some quando o take saiu limpo. Guardar
+    // sempre encheria a pasta de gravações de `.log` que ninguém vai ler — e
+    // arquivo que sempre existe é arquivo que ninguém percebe.
+    let keep_log = lost || !graceful || !remuxed || sys_audio_error.is_some();
+    let log_path = if keep_log {
+        Some(rec.log.to_string_lossy().to_string())
+    } else {
+        let _ = std::fs::remove_file(&rec.log);
+        None
+    };
+
     let done = if remuxed {
         // Só agora o MKV pode sair: o MP4 existe e está fechado. Apagar antes
         // seria trocar um arquivo bom por um talvez.
@@ -472,6 +554,8 @@ pub fn rec_stop(
             graceful,
             remuxed: true,
             sys_audio_error,
+            capture_lost: lost,
+            log_path,
         }
     } else {
         // Remux falhou: o take NÃO se perde. Fica o MKV, que é reproduzível, e
@@ -481,6 +565,8 @@ pub fn rec_stop(
             graceful,
             remuxed: false,
             sys_audio_error,
+            capture_lost: lost,
+            log_path,
         }
     };
     let _ = app.emit("rec-done", done.clone());
@@ -559,5 +645,38 @@ mod tests {
     fn caminho_unico_aguenta_nome_sem_extensao() {
         let got = unique_path_impl("C:/v/take", |p| p.replace('\\', "/") == "C:/v/take");
         assert_eq!(got.replace('\\', "/"), "C:/v/take (1)");
+    }
+
+    #[test]
+    fn detecta_captura_perdida_no_stderr() {
+        // As linhas REAIS que o ffmpeg cospe quando o ddagrab perde o acesso —
+        // colhidas reproduzindo o bug dos testes do João em 2026-07-18.
+        let real = "[Parsed_ddagrab_0 @ 000001f8] AcquireNextFrame failed: 887a0026\n\
+                    [in#0/lavfi @ 000001f8] Error during demuxing: Generic error in an external library";
+        assert!(capture_lost(real));
+        // Cada marcador sozinho também tem que pegar: o ffmpeg nem sempre cospe
+        // os dois, e um take de 2 minutos empurra o começo pra fora do rabo.
+        assert!(capture_lost("AcquireNextFrame failed: 887a0026"));
+        assert!(capture_lost("Error during demuxing: whatever"));
+    }
+
+    #[test]
+    fn stderr_normal_nao_e_captura_perdida() {
+        // Falso positivo aqui é pior que falso negativo: acusaria take bom de
+        // quebrado e o aviso viraria ruído que o usuário aprende a ignorar.
+        let normal = "[libx264 @ 0000] using cpu capabilities: MMX2 SSE2Fast\n\
+                      frame= 1234 fps= 30 q=23.0 size= 4096kB\n\
+                      [aac @ 0000] Qavg: 610.136";
+        assert!(!capture_lost(normal));
+        assert!(!capture_lost(""));
+    }
+
+    #[test]
+    fn log_fica_ao_lado_do_take() {
+        let got = log_path_for(Path::new("C:/v/gravacao-2026-07-18.mkv"));
+        assert_eq!(got.to_string_lossy().replace('\\', "/"), "C:/v/gravacao-2026-07-18.log");
+        // Nome com ponto no meio não pode virar log de outro take.
+        let got2 = log_path_for(Path::new("C:/v/take 1.2.mkv"));
+        assert_eq!(got2.to_string_lossy().replace('\\', "/"), "C:/v/take 1.2.log");
     }
 }

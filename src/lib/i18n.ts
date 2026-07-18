@@ -74,6 +74,8 @@ const pt = {
   "rec.needScreen": "Escolha uma tela pra gravar.",
   "rec.sysAudioOff": "Gravando SEM o áudio do sistema: {error}",
   "rec.sysAudioLost": "O áudio do sistema parou no meio da gravação ({error}) — daquele ponto em diante o take está em silêncio de verdade.",
+  "rec.captureLost": "A captura da tela parou no meio da gravação — o áudio continua, mas o vídeo congelou. O take foi salvo assim mesmo; confira antes de usar.",
+  "rec.logKept": "Guardei o log do ffmpeg deste take em {path} — é por onde se descobre o que deu errado.",
   "rec.minimized": "O LocalRecord se recolheu pra não aparecer no vídeo — volte por ele pela barra de tarefas pra parar a gravação.",
 
   "annot.title": "Anotação ao vivo",
@@ -174,6 +176,8 @@ const en: Record<MessageKey, string> = {
   "rec.needScreen": "Pick a screen to record.",
   "rec.sysAudioOff": "Recording WITHOUT system audio: {error}",
   "rec.sysAudioLost": "System audio stopped mid-recording ({error}) — from that point on the take is genuinely silent.",
+  "rec.captureLost": "Screen capture stopped mid-recording — the audio kept going, but the video froze. The take was still saved; check it before using it.",
+  "rec.logKept": "Kept this take's ffmpeg log at {path} — that's where you find out what went wrong.",
   "rec.minimized": "LocalRecord got out of the way so it doesn't show up in the video — bring it back from the taskbar to stop the recording.",
 
   "annot.title": "Live annotation",
@@ -272,6 +276,8 @@ const es: Record<MessageKey, string> = {
   "rec.needScreen": "Elige una pantalla para grabar.",
   "rec.sysAudioOff": "Grabando SIN el audio del sistema: {error}",
   "rec.sysAudioLost": "El audio del sistema se cortó a mitad de la grabación ({error}) — a partir de ahí la toma está de verdad en silencio.",
+  "rec.captureLost": "La captura de pantalla se detuvo a mitad de la grabación — el audio siguió, pero el video se congeló. La toma se guardó igual; revísala antes de usarla.",
+  "rec.logKept": "Guardé el registro de ffmpeg de esta toma en {path} — ahí se descubre qué salió mal.",
   "rec.minimized": "LocalRecord se apartó para no salir en el vídeo — recupéralo desde la barra de tareas para parar la grabación.",
 
   "annot.title": "Anotación en vivo",

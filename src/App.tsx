@@ -61,6 +61,10 @@ interface RecordDone {
   remuxed: boolean;
   /** O áudio do sistema caiu no meio? Vem o motivo (ver record.rs). */
   sysAudioError: string | null;
+  /** A captura de TELA morreu no meio: o áudio continua bom e o vídeo congela. */
+  captureLost: boolean;
+  /** Log do ffmpeg, preservado quando algo deu errado. `null` = take limpo. */
+  logPath: string | null;
 }
 
 /** Nível de uma fonte, emitido pelo Rust (cpal) enquanto o medidor está ligado. */
@@ -465,10 +469,17 @@ export default function App() {
       if (done.sysAudioError) {
         pushToast("info", t("rec.sysAudioLost", { error: done.sysAudioError }));
       }
+      // A captura de tela morreu no meio. Isto vira ERRO, não aviso: o take
+      // continua existindo e com áudio bom, mas o vídeo congelou — e descobrir
+      // isso no play, depois de gravar, é a pior hora possível.
+      if (done.captureLost) pushToast("error", t("rec.captureLost"));
       pushToast(
-        done.remuxed ? "ok" : "info",
+        // Take com a captura perdida não merece o verde de "deu tudo certo".
+        done.remuxed && !done.captureLost ? "ok" : "info",
         done.remuxed ? t("rec.saved", { path: done.path }) : t("rec.savedMkv", { path: done.path }),
       );
+      // Só aparece quando o log foi preservado — em take limpo ele é apagado.
+      if (done.logPath) pushToast("info", t("rec.logKept", { path: done.logPath }));
     } catch (e) {
       pushToast("error", t("rec.stopFailed", { error: String(e) }));
     } finally {
