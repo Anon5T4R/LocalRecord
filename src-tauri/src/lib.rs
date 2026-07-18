@@ -71,7 +71,8 @@ pub fn run() {
             annot::annot_arm,
             annot::annot_set_pen,
             annot::annot_state,
-            annot::annot_clear
+            annot::annot_clear,
+            annot::annot_focus
         ])
         .on_window_event(|win, event| {
             // A `annot` existe desde o boot (escondida). Sem isto, fechar a

@@ -161,6 +161,24 @@ pub fn annot_set_pen(app: AppHandle, on: bool) -> Result<AnnotSnapshot, String> 
     apply_pen(&app, on)
 }
 
+/// Puxa o foco do teclado pro overlay. Chamado quando a ferramenta de TEXTO
+/// abre a caixinha de digitar.
+///
+/// Existe por causa do `"focus": false` da janela (tauri.conf.json), que está
+/// certo — o overlay é armado antes da aula e não pode roubar o foco de quem
+/// está trabalhando. O efeito colateral é que clicar nele no Windows também
+/// NÃO o ativa: a caixinha de texto aparecia, o cursor piscava nela, e as
+/// teclas iam pro aplicativo de baixo. Foi o relato do João nos testes reais
+/// ("eu clico aqui e não faz nada") — e a caneta escapava porque desenhar não
+/// precisa de teclado.
+///
+/// Pedir o foco só ao digitar, e não ao ligar a caneta, mantém a promessa
+/// original: quem só rabisca nunca perde o foco do que estava fazendo.
+#[tauri::command(async)]
+pub fn annot_focus(app: AppHandle) -> Result<(), String> {
+    window(&app)?.set_focus().map_err(|e| e.to_string())
+}
+
 /// Estado real do overlay — pra UI reconciliar depois de um reload da webview
 /// (mesmo motivo do `rec_status`: a verdade mora no Rust, não no React).
 #[tauri::command(async)]

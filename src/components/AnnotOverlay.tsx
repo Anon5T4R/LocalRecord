@@ -140,6 +140,11 @@ export default function AnnotOverlay() {
     if (tool === "text") {
       setTyping(p);
       setDraft("");
+      // A janela do overlay é `focus: false` (tauri.conf.json) e no Windows nem
+      // o clique a ativa — sem este pedido o cursor pisca na caixinha e as
+      // teclas vão pro app de baixo. Só aqui, não ao ligar a caneta: quem só
+      // rabisca continua sem perder o foco do que estava fazendo.
+      if (isTauri) void invoke("annot_focus").catch(() => {});
       return;
     }
     (e.target as Element).setPointerCapture?.(e.pointerId);
