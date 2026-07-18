@@ -77,12 +77,21 @@ export default function Preview(props: Props) {
     };
   }, [grabber]);
 
-  // Câmera ao vivo no palco.
+  // Câmera ao vivo no palco — SÓ enquanto parado.
+  //
+  // Soltar a webcam ao gravar não é economia: é o ffmpeg que precisa dela. Uma
+  // webcam aberta aqui e pedida lá é o mesmo aparelho com dois donos, e quem
+  // perde é a gravação — a entrada `dshow` fica sem quadro, o `overlay` do
+  // grafo espera por um quadro que não vem e SEGURA o vídeo inteiro. Bate com
+  // o que os testes reais do João mostraram: câmera fora do arquivo, fps no
+  // chão e o `ddagrab` perdendo o acesso, tudo só quando havia câmera ligada.
+  //
+  // O mesmo motivo do medidor de microfone sumir durante a gravação (App.tsx).
   useEffect(() => {
     let stream: MediaStream | null = null;
     let alive = true;
     setCamError("");
-    if (!cameraId) {
+    if (!cameraId || disabled) {
       if (videoRef.current) videoRef.current.srcObject = null;
       return;
     }
@@ -102,7 +111,7 @@ export default function Preview(props: Props) {
       alive = false;
       if (stream) for (const tr of stream.getTracks()) tr.stop();
     };
-  }, [cameraId]);
+  }, [cameraId, disabled]);
 
   /** Solta o arraste no canto mais perto — os cantos são o vocabulário do
    *  overlay, então o arraste livre sempre "cai" num deles. */
