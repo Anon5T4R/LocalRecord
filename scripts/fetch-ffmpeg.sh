@@ -11,6 +11,17 @@
 # Uso: bash scripts/fetch-ffmpeg.sh
 set -euo pipefail
 
+# ---------------------------------------------------------------------------
+# VERSÃO FIXA + SHA256 (2026-07-18) — ver o comentário longo no fetch-ffmpeg.ps1.
+# Resumo: `latest` é tag ROLANTE (build diferente a cada dia, sem verificação
+# nenhuma). Agora: tag fixa + sha256 conferido antes de extrair.
+# `-gpl` (e não `-gpl-shared`): estático, sem arrastar .so pro AppImage.
+# PRA ATUALIZAR: trocar as constantes aqui E no .ps1, sempre juntos.
+# ---------------------------------------------------------------------------
+FF_TAG="autobuild-2026-07-17-13-22"
+FF_ASSET="ffmpeg-n8.1.2-22-g94138f6973-linux64-gpl-8.1.tar.xz"
+FF_SHA256="ca1b5eb366743fc44a415e1496dd39a8b3266d99d786bd3eb8cbd837452e306e"
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FF_DIR="$ROOT/src-tauri/binaries/ffmpeg"
 mkdir -p "$FF_DIR"
@@ -20,11 +31,21 @@ if [ -f "$FF_DIR/ffmpeg" ] && [ -f "$FF_DIR/ffprobe" ]; then
   exit 0
 fi
 
-# A release "latest" do BtbN é um autobuild com link estável.
-# `-gpl` (e não `-gpl-shared`): binário estático, sem arrastar .so pro AppImage.
-URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
+URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/$FF_TAG/$FF_ASSET"
 echo "Baixando $URL ..."
 curl -fsSL --retry 3 --retry-delay 2 "$URL" -o /tmp/ffmpeg-static.tar.xz
+
+# Confere ANTES de extrair: binário adulterado não chega a ser descompactado.
+GOT=$(sha256sum /tmp/ffmpeg-static.tar.xz | cut -d' ' -f1)
+if [ "$GOT" != "$FF_SHA256" ]; then
+  rm -f /tmp/ffmpeg-static.tar.xz
+  echo "SHA256 NAO BATE!" >&2
+  echo "  esperado: $FF_SHA256" >&2
+  echo "  recebido: $GOT" >&2
+  echo "Download corrompido ou adulterado. Nada foi instalado." >&2
+  exit 1
+fi
+echo "sha256 conferido: $GOT"
 
 rm -rf /tmp/ffmpeg-extract
 mkdir -p /tmp/ffmpeg-extract
