@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
-use crate::ffmpeg::{no_window, parse_progress_line, resolve_bin, FFMPEG_BIN};
+use crate::ffmpeg::{no_window, parse_progress_line, resolve_bin, FFMPEG_BIN, FFPROBE_BIN};
 use crate::sysaudio::SysAudioState;
 
 /// Quanto esperar o ffmpeg fechar o contêiner sozinho antes de partir pro kill.
@@ -56,6 +56,103 @@ fn capture_lost(tail: &str) -> bool {
     CAPTURE_LOST_MARKERS.iter().any(|m| tail.contains(m))
 }
 
+/// Abaixo de qual fração do fps alvo a gravação conta como degradada.
+///
+/// Metade: acima disso é engasgo normal de máquina ocupada (e o usuário não
+/// pode ser interrompido a cada pico), abaixo disso o take não serve.
+const FPS_ALERT_RATIO: f64 = 0.5;
+/// Quantas amostras seguidas abaixo do limiar antes de falar. O ffmpeg emite
+/// um bloco de progresso por segundo, então são ~3s.
+///
+/// Não é 1 de propósito: o PRIMEIRO bloco sempre vem com fps baixo (o encoder
+/// ainda está subindo) e avisar ali seria mentir em toda gravação boa.
+const FPS_ALERT_SAMPLES: usize = 3;
+
+/// Já dá pra dizer que a gravação está degradada? Recebe as amostras de fps na
+/// ordem em que chegaram e o alvo.
+///
+/// Pura de propósito: é a regra que decide interromper o usuário no meio de uma
+/// gravação, e regra dessas tem que ser testável sem ffmpeg nenhum.
+fn fps_degraded(samples: &[f64], target: f64) -> bool {
+    if target <= 0.0 || samples.len() < FPS_ALERT_SAMPLES {
+        return false;
+    }
+    let limite = target * FPS_ALERT_RATIO;
+    // Só as últimas: um vale no começo não condena o resto da gravação.
+    samples[samples.len() - FPS_ALERT_SAMPLES..].iter().all(|f| *f < limite)
+}
+
+/// Abaixo de qual fração dos quadros esperados o take conta como degenerado.
+///
+/// Mais frouxo que o alerta ao vivo (que usa metade): aqui é o veredito final e
+/// falso positivo custa caro — dizer "seu take quebrou" pra quem gravou dez
+/// minutos bons é pior que deixar passar uma degradação leve, que o alerta ao
+/// vivo já pegou.
+const TAKE_MIN_RATIO: f64 = 0.25;
+
+/// O take saiu degenerado? Compara os quadros que o arquivo REALMENTE tem com os
+/// que a duração e o fps alvo prometiam.
+///
+/// Existe porque o `rec_stop` só sabia checar se o remux deu certo — e o remux
+/// de um vídeo com 1 quadro dá certo. Um `-c copy` copia com perfeição um
+/// arquivo quebrado.
+fn take_degraded(frames: u64, duration_s: f64, target: f64) -> bool {
+    // Sem alvo ou take curto demais: não dá pra afirmar nada, e afirmar sem
+    // base é o que transforma aviso em ruído. 2s porque abaixo disso o próprio
+    // arredondamento do fps já explica a diferença.
+    if target <= 0.0 || duration_s < 2.0 {
+        return false;
+    }
+    let esperados = duration_s * target;
+    (frames as f64) < esperados * TAKE_MIN_RATIO
+}
+
+/// Quantos pacotes de vídeo e quantos segundos o arquivo tem de verdade.
+///
+/// `-count_packets` (e não `-count_frames`): conta desmuxando, sem decodificar.
+/// Num take de 10 minutos a diferença é entre instantâneo e dezenas de segundos
+/// — e pacote de vídeo é a mesma unidade que interessa aqui.
+fn probe_video(ffprobe: &Path, file: &Path) -> Option<(u64, f64)> {
+    let mut cmd = Command::new(ffprobe);
+    cmd.args([
+        "-v", "error",
+        "-select_streams", "v:0",
+        "-count_packets",
+        "-show_entries", "stream=nb_read_packets,duration",
+        "-of", "default=nokey=1:noprint_wrappers=1",
+    ])
+    .arg(file)
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null());
+    no_window(&mut cmd);
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let txt = String::from_utf8_lossy(&out.stdout);
+    parse_probe_video(&txt)
+}
+
+/// Lê a saída do `probe_video`. Separada pra ser testável sem ffprobe.
+///
+/// A ordem dos campos segue a do `-show_entries` (`duration` antes de
+/// `nb_read_packets` na struct do ffprobe), e `duration` pode vir `N/A` em MKV —
+/// por isso a leitura é por conteúdo, não por posição: o inteiro grande é a
+/// contagem, o decimal é a duração.
+fn parse_probe_video(txt: &str) -> Option<(u64, f64)> {
+    let mut frames: Option<u64> = None;
+    let mut dur: Option<f64> = None;
+    for l in txt.lines().map(str::trim).filter(|l| !l.is_empty() && *l != "N/A") {
+        if l.contains('.') {
+            dur = l.parse::<f64>().ok().or(dur);
+        } else if let Ok(n) = l.parse::<u64>() {
+            frames = Some(n);
+        }
+    }
+    Some((frames?, dur?))
+}
+
 /// Onde fica o log do ffmpeg de um take: o mesmo caminho do MKV com `.log`.
 ///
 /// Ao lado da gravação de propósito — quem for investigar um take estranho acha
@@ -75,6 +172,10 @@ pub struct RecordOpts {
     pub remux_args: Vec<String>,
     pub mkv_path: String,
     pub mp4_path: String,
+    /// Fps que a gravação PEDIU. Serve pra comparar com o fps real que o ffmpeg
+    /// reporta e avisar durante a gravação — não pra montar args (quem monta é
+    /// o front, gotcha #7). `None` = sem alvo, sem aviso.
+    pub target_fps: Option<f64>,
 }
 
 #[derive(Serialize, Clone)]
@@ -106,6 +207,15 @@ pub struct RecordDone {
     /// Onde ficou o log do ffmpeg, quando ele foi preservado. `None` = o take
     /// saiu limpo e o log foi apagado (não sujar a pasta de gravações).
     pub log_path: Option<String>,
+    /// O arquivo final foi CONFERIDO com ffprobe e tem menos vídeo do que a
+    /// duração prometia. É o veredito que faltava: até a v0.3 o `rec_stop`
+    /// checava só se o remux deu certo, e remux de arquivo quebrado dá certo.
+    pub take_degraded: bool,
+    /// Quantos pacotes de vídeo o arquivo tem de verdade, e quantos eram
+    /// esperados. Vai pra UI poder dizer o TAMANHO do estrago em vez de só
+    /// "deu ruim" — `None` se o ffprobe não respondeu.
+    pub frames: Option<u64>,
+    pub frames_expected: Option<u64>,
 }
 
 #[derive(Serialize, Clone)]
@@ -129,6 +239,8 @@ struct Rec {
     /// Log do ffmpeg deste take. Escrito em STREAMING durante a gravação (não
     /// só no fim): se o app morrer no meio, o log do que aconteceu sobrevive.
     log: PathBuf,
+    /// Guardado do start pro stop poder julgar o resultado contra o que foi pedido.
+    target_fps: Option<f64>,
 }
 
 /// Uma gravação por vez (v0.1). O `Option` é o estado inteiro: `None` = parado.
@@ -299,6 +411,7 @@ fn try_start(
     ffmpeg: &Path,
     args: &[String],
     log: &Path,
+    target_fps: Option<f64>,
 ) -> Result<(Child, Arc<Mutex<VecDeque<String>>>), String> {
     let mut child = spawn_ffmpeg(ffmpeg, args)?;
     let stdout = child.stdout.take().ok_or("sem stdout do ffmpeg")?;
@@ -322,14 +435,24 @@ fn try_start(
     // uma vez só) e some do rabo depois de dois minutos de aviso de encoder.
     let err: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
     let err_c = err.clone();
+    let app_err = app.clone();
     std::thread::spawn(move || {
         // Re-liga `mut` dentro da thread: a mutabilidade do binding de fora não
         // atravessa a captura por `move` de forma óbvia, e depender disso é
         // pedir erro de compilação que só o CI ia mostrar.
         let mut sink = sink;
+        // A linha do `AcquireNextFrame failed` sai UMA vez, no instante em que a
+        // captura morre. Avisar AQUI é a diferença entre o usuário perder 3
+        // segundos e perder os 2 minutos que ele ainda vai gravar achando que
+        // está tudo bem — foi exatamente o que aconteceu nos testes reais.
+        let mut ja_avisou = false;
         for line in BufReader::new(stderr).lines().map_while(Result::ok) {
             if let Some(f) = sink.as_mut() {
                 let _ = writeln!(f, "{}", line);
+            }
+            if !ja_avisou && capture_lost(&line) {
+                ja_avisou = true;
+                let _ = app_err.emit("rec-capture-lost", ());
             }
             if let Ok(mut v) = err_c.lock() {
                 push_tail(&mut v, line, ERR_TAIL);
@@ -362,6 +485,11 @@ fn try_start(
             size_bytes: 0,
             speed: String::new(),
         };
+        // O app SEMPRE soube o fps real — mostra no rodapé desde a v0.1. O que
+        // faltava era ele reagir: o take degenerado dos testes reais exibia
+        // `3.21 fps` na tela enquanto a UI seguia dizendo que estava gravando.
+        let mut fps_amostras: Vec<f64> = Vec::new();
+        let mut ja_avisou_fps = false;
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             match parse_progress_line(&line) {
                 // µs → ms, o gotcha #1 pago aqui.
@@ -372,6 +500,18 @@ fn try_start(
                 // O ffmpeg fecha cada bloco com `progress=`; só aí o retrato
                 // está completo e vale emitir.
                 Some(("progress", _)) => {
+                    if let Some(alvo) = target_fps {
+                        if let Ok(f) = p.fps.parse::<f64>() {
+                            fps_amostras.push(f);
+                        }
+                        // Uma vez só: repetir o aviso a cada segundo viraria
+                        // ruído e o usuário aprenderia a ignorar justamente o
+                        // aviso que importa.
+                        if !ja_avisou_fps && fps_degraded(&fps_amostras, alvo) {
+                            ja_avisou_fps = true;
+                            let _ = app_c.emit("rec-fps-low", p.fps.clone());
+                        }
+                    }
                     let _ = app_c.emit("rec-progress", p.clone());
                 }
                 _ => {}
@@ -405,7 +545,7 @@ pub fn rec_start(
     let log = log_path_for(&mkv);
     let _ = std::fs::remove_file(&log);
 
-    let (child, err, used_fallback) = match try_start(&app, &ffmpeg, &opts.args, &log) {
+    let (child, err, used_fallback) = match try_start(&app, &ffmpeg, &opts.args, &log, opts.target_fps) {
         Ok((c, e)) => (c, e, false),
         Err(first) => {
             // Plano B honesto: só cai no gdigrab se o ddagrab REALMENTE não
@@ -424,7 +564,7 @@ pub fn rec_start(
                 crate::sysaudio::stop_feed(&sys);
                 return Err(format!("{} | e o canal do áudio do sistema não voltou: {}", first, e));
             }
-            match try_start(&app, &ffmpeg, &fb, &log) {
+            match try_start(&app, &ffmpeg, &fb, &log, opts.target_fps) {
                 Ok((c, e)) => (c, e, true),
                 Err(second) => {
                     crate::sysaudio::stop_feed(&sys);
@@ -441,6 +581,7 @@ pub fn rec_start(
         remux_args: opts.remux_args,
         err,
         log,
+        target_fps: opts.target_fps,
     };
     *state.inner.lock().map_err(|_| "estado corrompido")? = Some(rec);
 
@@ -537,7 +678,23 @@ pub fn rec_stop(
     // O log fica quando ALGO deu errado; some quando o take saiu limpo. Guardar
     // sempre encheria a pasta de gravações de `.log` que ninguém vai ler — e
     // arquivo que sempre existe é arquivo que ninguém percebe.
-    let keep_log = lost || !graceful || !remuxed || sys_audio_error.is_some();
+    // Veredito do arquivo QUE FICOU. Roda no final (mp4 se remuxou, senão o
+    // mkv) porque é esse que o usuário vai abrir — conferir o intermediário
+    // provaria a coisa errada.
+    let final_file = if remuxed { rec.mp4.clone() } else { rec.mkv.clone() };
+    let probed = resolve_bin(&app, FFPROBE_BIN).ok().and_then(|pb| probe_video(&pb, &final_file));
+    let alvo = rec.target_fps.unwrap_or(0.0);
+    let (degraded, frames, frames_expected) = match probed {
+        Some((n, dur)) => (
+            take_degraded(n, dur, alvo),
+            Some(n),
+            if alvo > 0.0 { Some((dur * alvo).round() as u64) } else { None },
+        ),
+        // ffprobe mudo não é acusação: sem medida, não se afirma nada.
+        None => (false, None, None),
+    };
+
+    let keep_log = lost || degraded || !graceful || !remuxed || sys_audio_error.is_some();
     let log_path = if keep_log {
         Some(rec.log.to_string_lossy().to_string())
     } else {
@@ -556,6 +713,9 @@ pub fn rec_stop(
             sys_audio_error,
             capture_lost: lost,
             log_path,
+            take_degraded: degraded,
+            frames,
+            frames_expected,
         }
     } else {
         // Remux falhou: o take NÃO se perde. Fica o MKV, que é reproduzível, e
@@ -567,6 +727,9 @@ pub fn rec_stop(
             sys_audio_error,
             capture_lost: lost,
             log_path,
+            take_degraded: degraded,
+            frames,
+            frames_expected,
         }
     };
     let _ = app.emit("rec-done", done.clone());
@@ -669,6 +832,66 @@ mod tests {
                       [aac @ 0000] Qavg: 610.136";
         assert!(!capture_lost(normal));
         assert!(!capture_lost(""));
+    }
+
+    #[test]
+    fn fps_degradado_so_com_amostras_seguidas() {
+        // O caso real do take 2: 3,21 fps num alvo de 30.
+        assert!(fps_degraded(&[3.21, 3.4, 3.0], 30.0));
+        // Uma amostra ruim no meio de boas NÃO é degradação — máquina ocupada
+        // engasga o tempo todo e avisar aqui viraria ruído.
+        assert!(!fps_degraded(&[30.0, 3.0, 29.0], 30.0));
+        // Nem duas: o limiar são três seguidas.
+        assert!(!fps_degraded(&[30.0, 3.0, 3.0], 30.0));
+        // O começo da gravação sempre tem fps baixo (encoder subindo) e não
+        // pode disparar aviso antes de haver amostras suficientes.
+        assert!(!fps_degraded(&[1.0, 2.0], 30.0));
+        // Só as ÚLTIMAS contam: começou mal e se recuperou = tudo bem.
+        assert!(!fps_degraded(&[1.0, 1.0, 1.0, 29.0, 30.0, 30.0], 30.0));
+    }
+
+    #[test]
+    fn fps_degradado_respeita_o_limiar_e_o_alvo() {
+        // Exatamente na metade NÃO alerta (o corte é estritamente abaixo).
+        assert!(!fps_degraded(&[15.0, 15.0, 15.0], 30.0));
+        assert!(fps_degraded(&[14.9, 14.9, 14.9], 30.0));
+        // Alvo baixo move o limiar junto: 7 fps é ótimo pra um alvo de 10.
+        assert!(!fps_degraded(&[7.0, 7.0, 7.0], 10.0));
+        assert!(fps_degraded(&[4.0, 4.0, 4.0], 10.0));
+        // Alvo inválido nunca alerta — sem alvo não há do que reclamar.
+        assert!(!fps_degraded(&[0.0, 0.0, 0.0], 0.0));
+    }
+
+    #[test]
+    fn take_degenerado_e_o_caso_real_do_joao() {
+        // Take 1 dos testes reais: 115s de áudio, UM quadro de vídeo, alvo 30.
+        assert!(take_degraded(1, 115.04, 30.0));
+        // Take 2: 199 quadros em 53s (≈3,7 fps) — esperados ~1590.
+        assert!(take_degraded(199, 53.03, 30.0));
+        // Take são: 30 fps de verdade.
+        assert!(!take_degraded(1590, 53.0, 30.0));
+        // Perda moderada NÃO é degenerado: o veredito final é frouxo de
+        // propósito, quem pega degradação leve é o alerta ao vivo.
+        assert!(!take_degraded(1200, 53.0, 30.0));
+    }
+
+    #[test]
+    fn take_degenerado_nao_acusa_sem_base() {
+        // Sem alvo não há promessa que o arquivo possa quebrar.
+        assert!(!take_degraded(1, 115.0, 0.0));
+        // Take curtíssimo: o arredondamento do fps explica qualquer diferença.
+        assert!(!take_degraded(0, 1.5, 30.0));
+    }
+
+    #[test]
+    fn le_a_saida_do_ffprobe() {
+        // Saída real: duração (decimal) e contagem (inteiro), uma por linha.
+        assert_eq!(parse_probe_video("53.030000\n199\n"), Some((199, 53.03)));
+        // MKV costuma não trazer duração no stream — sem ela não há veredito.
+        assert_eq!(parse_probe_video("N/A\n199\n"), None);
+        // Nada de útil = nada afirmado.
+        assert_eq!(parse_probe_video(""), None);
+        assert_eq!(parse_probe_video("53.03\n"), None);
     }
 
     #[test]

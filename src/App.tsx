@@ -65,6 +65,11 @@ interface RecordDone {
   captureLost: boolean;
   /** Log do ffmpeg, preservado quando algo deu errado. `null` = take limpo. */
   logPath: string | null;
+  /** O arquivo final foi CONFERIDO com ffprobe e tem menos vídeo do que devia. */
+  takeDegraded: boolean;
+  /** Pacotes de vídeo reais e esperados — pra dizer o tamanho do estrago. */
+  frames: number | null;
+  framesExpected: number | null;
 }
 
 /** Nível de uma fonte, emitido pelo Rust (cpal) enquanto o medidor está ligado. */
@@ -297,6 +302,11 @@ export default function App() {
         setLevels((l) => ({ ...l, [e.payload.target]: e.payload.peak })),
       ),
       listen<string>("rec-notice", (e) => pushToast("info", t("rec.fallback", { error: e.payload }))),
+      // Os dois avisos AO VIVO. A v0.3 só descobria o estrago no stop — o
+      // usuário gravava 2 minutos de nada e só então era informado. Aqui ele
+      // fica sabendo enquanto ainda dá pra parar e refazer.
+      listen("rec-capture-lost", () => pushToast("error", t("rec.captureLostLive"))),
+      listen<string>("rec-fps-low", (e) => pushToast("error", t("rec.fpsLow", { fps: e.payload }))),
       // O atalho global liga a caneta sem passar por esta janela — sem ouvir
       // isto, o painel mentiria sobre o estado do overlay.
       listen<AnnotSnapshot>("annot-state", (e) => setAnnot(e.payload)),
@@ -412,6 +422,9 @@ export default function App() {
           remuxArgs: buildRemuxArgs(mkvPath, mp4Path),
           mkvPath,
           mp4Path,
+          // O alvo vai junto pro Rust poder comparar com o fps REAL e falar
+          // durante a gravação — e pra conferir o arquivo no stop.
+          targetFps: spec.fps,
         },
       });
       setPhase("recording");
@@ -473,9 +486,22 @@ export default function App() {
       // continua existindo e com áudio bom, mas o vídeo congelou — e descobrir
       // isso no play, depois de gravar, é a pior hora possível.
       if (done.captureLost) pushToast("error", t("rec.captureLost"));
+      // O veredito do ffprobe sobre o arquivo que ficou. Vale por si: dá pra
+      // sair degenerado sem NENHUM marcador no stderr (o ddagrab entregando
+      // quadro repetido devagar não reclama), e aí este é o único que pega.
+      if (done.takeDegraded) {
+        pushToast(
+          "error",
+          t("rec.takeDegraded", {
+            frames: String(done.frames ?? "?"),
+            expected: String(done.framesExpected ?? "?"),
+          }),
+        );
+      }
       pushToast(
-        // Take com a captura perdida não merece o verde de "deu tudo certo".
-        done.remuxed && !done.captureLost ? "ok" : "info",
+        // Take quebrado não merece o verde de "deu tudo certo" — nem o que
+        // perdeu a captura, nem o que o ffprobe reprovou.
+        done.remuxed && !done.captureLost && !done.takeDegraded ? "ok" : "info",
         done.remuxed ? t("rec.saved", { path: done.path }) : t("rec.savedMkv", { path: done.path }),
       );
       // Só aparece quando o log foi preservado — em take limpo ele é apagado.

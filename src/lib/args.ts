@@ -186,7 +186,12 @@ export function buildRecordArgs(s: RecordSpec): string[] {
       // `-rtbufsize`: sem isso o dshow enche o buffer e derruba quadro
       // ("real-time buffer full") em máquina ocupada — que é o caso normal
       // de quem está gravando um tutorial.
-      args.push("-rtbufsize", "128M", "-f", "dshow", "-i", `video=${s.camera.id}`);
+      //
+      // `-framerate` ANTES do `-i`: sem ele o dshow escolhe um modo sozinho, e
+      // câmera que oferece 30 e 10 fps pode entregar os 10 — a gravação inteira
+      // fica presa no ritmo da webcam. Pedir o mesmo fps da tela mantém as duas
+      // entradas no mesmo compasso.
+      args.push("-rtbufsize", "128M", "-f", "dshow", "-framerate", String(s.fps), "-i", `video=${s.camera.id}`);
     } else {
       args.push("-f", "v4l2", "-i", s.camera.id);
     }

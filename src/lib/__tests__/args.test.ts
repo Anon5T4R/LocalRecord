@@ -46,7 +46,7 @@ describe("buildRecordArgs", () => {
     });
     expect(args).toEqual([
       "-f", "lavfi", "-i", "ddagrab=output_idx=0:framerate=30",
-      "-rtbufsize", "128M", "-f", "dshow", "-i", "video=Integrated Camera",
+      "-rtbufsize", "128M", "-f", "dshow", "-framerate", "30", "-i", "video=Integrated Camera",
       "-filter_complex",
       "[0:v]hwdownload,format=bgra[scr];" +
         "[1:v][scr]scale2ref=w=iw*0.2500:h=ow/mdar[cam][scr2];" +
@@ -65,7 +65,7 @@ describe("buildRecordArgs", () => {
     });
     expect(args).toEqual([
       "-f", "lavfi", "-i", "ddagrab=output_idx=0:framerate=30",
-      "-rtbufsize", "128M", "-f", "dshow", "-i", "video=Integrated Camera",
+      "-rtbufsize", "128M", "-f", "dshow", "-framerate", "30", "-i", "video=Integrated Camera",
       "-rtbufsize", "128M", "-f", "dshow", "-i", "audio=Microfone (Realtek(R) Audio)",
       "-filter_complex",
       "[0:v]hwdownload,format=bgra[scr];" +
@@ -270,5 +270,22 @@ describe("expandPattern", () => {
   it("padrão vazio ainda dá um nome", () => {
     expect(expandPattern("", now)).toBe("gravacao");
     expect(expandPattern("   ", now)).toBe("gravacao");
+  });
+});
+
+describe("modo da câmera", () => {
+  it("fixa o framerate da câmera no mesmo da tela", () => {
+    // B7 dos testes reais: sem `-framerate`, o dshow escolhe o modo sozinho e
+    // uma câmera que oferece 30 e 10 fps pode entregar os 10 — arrastando a
+    // gravação inteira pro ritmo dela.
+    const args = buildRecordArgs({ ...base, fps: 60, camera: { id: "Cam", corner: "br", sizePct: 25 } });
+    const i = args.indexOf("dshow");
+    expect(args.slice(i + 1, i + 4)).toEqual(["-framerate", "60", "-i"]);
+  });
+
+  it("não mexe na câmera do Linux (v4l2 não tem esse problema)", () => {
+    const args = buildRecordArgs({ ...base, platform: "linux", grabber: "x11grab", camera: { id: "Cam", corner: "br", sizePct: 25 } });
+    expect(args).toContain("v4l2");
+    expect(args.filter((a) => a === "-framerate")).toHaveLength(1); // só o do x11grab
   });
 });
