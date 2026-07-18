@@ -323,9 +323,31 @@ describe("pickCamMode — o achado dos testes reais de 2026-07-18", () => {
     expect(m?.fps).toBe(30);
   });
 
-  it("sem modo que sirva, devolve null e o ffmpeg decide (não recusa gravar)", () => {
-    expect(pickCamMode(MODOS, 60, 24)).toBeNull();
+  it("camera que nao alcanca o alvo entrega o MELHOR que tem", () => {
+    // O caso da webcam simples: alvo 60, teto 30. Devolver null deixaria o
+    // dshow escolher — e foi ele que escolhia 1080p a 5 fps. Melhor gravar a
+    // 30 do que deixar o palpite de volta.
+    const m = pickCamMode(MODOS, 60, 24);
+    expect(m?.fps).toBe(30);
+  });
+
+  it("so devolve null quando nao ha modo NENHUM", () => {
     expect(pickCamMode([], 30, 24)).toBeNull();
+  });
+
+  it("o -framerate segue o MODO, nao o alvo da gravacao", () => {
+    // Pedir 60 numa camera de 30 e pedir o impossivel, e o dshow reage
+    // escolhendo por conta propria. A tela continua no alvo; so a camera cede.
+    const mode = pickCamMode(MODOS, 60, 24)!;
+    const args = buildRecordArgs({
+      ...base,
+      fps: 60,
+      camera: { id: "Cam", corner: "br", sizePct: 24, mode },
+    });
+    const d = args.indexOf("dshow");
+    expect(args.slice(d, args.indexOf("-i", d)).join(" ")).toContain("-framerate 30");
+    // A tela NAO cede junto: ela e capaz de 60.
+    expect(args.join(" ")).toContain("framerate=60");
   });
 
   it("o modo escolhido vira args de ABERTURA, antes do -i", () => {

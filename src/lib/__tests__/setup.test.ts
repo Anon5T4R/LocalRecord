@@ -30,6 +30,7 @@ const SAVED: Setup = {
   tracks: "separate",
   corner: "tl",
   sizePct: 33,
+  fps: 60,
   labels: {
     "Logitech C920": "Logitech C920",
     "Mic USB": "Mic USB",
@@ -157,5 +158,22 @@ describe("labelsFor", () => {
   it("colhe o rótulo só dos ids escolhidos, ignorando vazios e desconhecidos", () => {
     const map = labelsFor(FULL, ["Logitech C920", "", "Mic USB", "id-que-nao-existe"]);
     expect(map).toEqual({ "Logitech C920": "Logitech C920", "Mic USB": "Mic USB" });
+  });
+});
+
+describe("alvo de fps", () => {
+  it("restaura o que foi salvo", () => {
+    expect(reconcileSetup(SAVED, FULL).setup.fps).toBe(60);
+  });
+
+  it("valor fora da lista cai no default (lista fechada, não faixa)", () => {
+    // Um fps arbitrário vindo de storage corrompido iria direto pro ffmpeg E
+    // pra escolha do modo da câmera — 1000 fps não descartaria modo nenhum.
+    for (const ruim of [45, 0, -30, 999, NaN]) {
+      // `as Setup` de propósito: o ponto do teste é justamente o valor que o
+      // TIPO proíbe mas o localStorage entrega.
+      const corrompido = { ...SAVED, fps: ruim } as unknown as Setup;
+      expect(reconcileSetup(corrompido, FULL).setup.fps).toBe(DEFAULT_SETUP.fps);
+    }
   });
 });

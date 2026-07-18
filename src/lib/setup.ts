@@ -29,6 +29,10 @@ export interface Setup {
   tracks: AudioTracks;
   corner: Corner;
   sizePct: number;
+  /** Quadros por segundo que a gravação PEDE. Escolha do usuário desde a v0.5.1
+   *  — 60 pra quem tem hardware e câmera que aguentam, 24 pra quem quer folga
+   *  (webcam barata costuma não sustentar 30 e arrasta o resto junto). */
+  fps: TargetFps;
   /** Rótulos dos dispositivos escolhidos no momento do save. Só servem pra dar
    *  NOME ao aviso quando um deles some: uma vez desplugado, o device não está
    *  mais na lista atual, então não dá pra descobrir o rótulo na hora de
@@ -39,6 +43,12 @@ export interface Setup {
 
 /** Faixa do slider de tamanho da câmera (App.tsx: min=10 max=40). O clamp mora
  *  aqui pra um sizePct corrompido no storage não escapar pro ffmpeg. */
+/** Os alvos oferecidos. Acima de 60 é gargalo sem uso: o LocalRecord grava aula
+ *  e tutorial, não stream competitivo. Abaixo, 24 existe porque a direção que
+ *  ajuda quem tem câmera fraca é PRA BAIXO, não pra cima. */
+export const FPS_OPTIONS = [24, 30, 60] as const;
+export type TargetFps = (typeof FPS_OPTIONS)[number];
+
 export const SIZE_MIN = 10;
 export const SIZE_MAX = 40;
 
@@ -51,6 +61,7 @@ export const DEFAULT_SETUP: Setup = {
   tracks: "mixed",
   corner: "br",
   sizePct: 25,
+  fps: 30,
   labels: {},
 };
 
@@ -158,9 +169,14 @@ export function reconcileSetup(saved: Partial<Setup> | null, list: DeviceList): 
   const tracks = TRACKS.includes(s.tracks as AudioTracks) ? (s.tracks as AudioTracks) : "mixed";
   const corner = CORNERS.includes(s.corner as Corner) ? (s.corner as Corner) : "br";
   const sizePct = clamp(s.sizePct as number, SIZE_MIN, SIZE_MAX, DEFAULT_SETUP.sizePct);
+  // Lista fechada, não faixa: um fps arbitrário vindo de storage corrompido iria
+  // direto pro ffmpeg e pra escolha do modo da câmera.
+  const fps = (FPS_OPTIONS as readonly number[]).includes(s.fps as number)
+    ? (s.fps as TargetFps)
+    : DEFAULT_SETUP.fps;
 
   return {
-    setup: { screen, camera, mic, output, sysOn, tracks, corner, sizePct, labels },
+    setup: { screen, camera, mic, output, sysOn, tracks, corner, sizePct, fps, labels },
     dropped,
   };
 }

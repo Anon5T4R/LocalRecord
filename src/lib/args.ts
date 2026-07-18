@@ -70,8 +70,18 @@ export function pickCamMode(modes: CamMode[], targetFps: number, sizePct: number
   const servem = modes.filter((m) => m.fps >= targetFps && m.width >= precisa);
   // Nenhum dá o fps E a largura: relaxa a largura antes do fps. Um PiP um pouco
   // menos nítido é invisível no vídeo final; metade dos quadros não é.
-  const pool = servem.length > 0 ? servem : modes.filter((m) => m.fps >= targetFps);
+  let pool = servem.length > 0 ? servem : modes.filter((m) => m.fps >= targetFps);
+
+  // Nenhum modo alcança o alvo — a webcam simples do mundo real. Escolher o
+  // MELHOR que ela tem é muito melhor que devolver `null`: sem modo explícito
+  // quem decide é o dshow, e foi ele que escolhia 1080p a 5 fps. Uma câmera de
+  // 15 fps deve gravar a 15, não desandar a gravação inteira.
+  if (pool.length === 0 && modes.length > 0) {
+    const teto = Math.max(...modes.map((m) => m.fps));
+    pool = modes.filter((m) => m.fps === teto);
+  }
   if (pool.length === 0) return null;
+
   return pool.slice().sort((a, b) => {
     const area = a.width * a.height - b.width * b.height;
     if (area !== 0) return area;
@@ -246,8 +256,12 @@ export function buildRecordArgs(s: RecordSpec): string[] {
       //
       // `-video_size` e o codec/pixel format do modo escolhido são o que tira a
       // decisão do dshow e põe em `pickCamMode`, que sabe o que a gravação pediu.
-      args.push("-rtbufsize", "128M", "-f", "dshow", "-framerate", String(s.fps));
       const m = s.camera.mode;
+      // O `-framerate` é o do MODO, não o da gravação: pedir 30 numa câmera que
+      // só faz 15 é pedir o impossível, e o dshow reage escolhendo por conta
+      // própria — que é exatamente o bug que este bloco existe pra fechar.
+      const camFps = m ? Math.min(m.fps, s.fps) : s.fps;
+      args.push("-rtbufsize", "128M", "-f", "dshow", "-framerate", String(camFps));
       if (m) {
         args.push("-video_size", `${m.width}x${m.height}`);
         // Um ou outro, nunca os dois: o modo é comprimido OU cru.

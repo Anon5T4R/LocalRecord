@@ -32,9 +32,11 @@ import {
 } from "./lib/sources";
 import {
   labelsFor,
+  FPS_OPTIONS,
   loadSetup,
   reconcileSetup,
   saveSetup,
+  type TargetFps,
   type DroppedKind,
 } from "./lib/setup";
 import { useUi } from "./state/ui";
@@ -104,7 +106,6 @@ const platform: Platform =
  *  O gdigrab não entra aqui: ele é só o plano B, montado no `rec_start`. */
 const GRABBER: Grabber = platform === "windows" ? "ddagrab" : "x11grab";
 
-const FPS = 30;
 const ZERO: RecProgress = { elapsedMs: 0, fps: "", sizeBytes: 0, speed: "" };
 
 /** <select> de uma fonte. `emptyLabel` = a opção "nenhum" (câmera/mic são opcionais). */
@@ -176,6 +177,10 @@ export default function App() {
 
   const [corner, setCorner] = useState<Corner>(initial.corner);
   const [sizePct, setSizePct] = useState(initial.sizePct);
+  // O alvo de quadros por segundo. Deixou de ser constante na v0.5.1: 60 pra
+  // quem tem folga, 24 pra quem tem câmera fraca — e é PRA BAIXO que a escolha
+  // ajuda nesse caso, não pra cima.
+  const [fps, setFps] = useState<TargetFps>(initial.fps);
   const [outDir, setOutDir] = useState("");
   const [pattern, setPattern] = useState("gravacao-{date}-{time}");
   const [encoder, setEncoder] = useState<Encoder | "">("");
@@ -276,12 +281,13 @@ export default function App() {
       tracks,
       corner,
       sizePct,
+      fps,
       // Guarda o rótulo dos escolhidos AGORA: se um deles sumir na próxima
       // sessão, é só assim que o aviso consegue dizer o nome (o device já não
       // estará na lista pra consultar).
       labels: labelsFor(devices, [screen, camera, mic, output]),
     });
-  }, [screen, camera, mic, output, sysOn, tracks, corner, sizePct, devices]);
+  }, [screen, camera, mic, output, sysOn, tracks, corner, sizePct, fps, devices]);
 
   // A sonda decide se o áudio do sistema é OFERECÍVEL nesta máquina. Ela não
   // captura nada — só pergunta ao Windows se existe saída de áudio e qual é.
@@ -417,9 +423,9 @@ export default function App() {
       const spec: RecordSpec = {
         platform,
         grabber: GRABBER,
-        fps: FPS,
+        fps,
         camera: camera
-          ? { id: camera, corner, sizePct, mode: pickCamMode(camModes, FPS, sizePct) }
+          ? { id: camera, corner, sizePct, mode: pickCamMode(camModes, fps, sizePct) }
           : null,
         mic: mic || null,
         sysAudio,
@@ -463,7 +469,7 @@ export default function App() {
       setPhase("idle");
       pushToast("error", t("rec.failed", { error: String(e) }));
     }
-  }, [camera, corner, encoder, mic, outDir, output, pattern, pushToast, sizePct, sysErr, sysOn, tracks]);
+  }, [camera, camModes, corner, encoder, fps, mic, outDir, output, pattern, pushToast, sizePct, sysErr, sysOn, tracks]);
 
   // Contagem regressiva: o usuário precisa de tempo pra sair do LocalRecord e
   // ir pra janela que ele vai demonstrar.
@@ -751,6 +757,26 @@ export default function App() {
               </div>
             </div>
           )}
+
+          {/* Fica FORA do bloco da câmera: o alvo vale pra gravação inteira,
+              com câmera ou sem. */}
+          <div className="card">
+            <div className="size-row">
+              <span className="muted">{t("rec.fpsTarget")}</span>
+              <select
+                value={fps}
+                disabled={busy}
+                onChange={(e) => setFps(Number(e.target.value) as TargetFps)}
+              >
+                {FPS_OPTIONS.map((n) => (
+                  <option key={n} value={n}>
+                    {n} fps
+                  </option>
+                ))}
+              </select>
+            </div>
+            <p className="muted small">{t("rec.fpsTargetHint")}</p>
+          </div>
         </div>
       </div>
 
