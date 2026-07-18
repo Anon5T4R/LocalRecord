@@ -32,6 +32,10 @@ const pt = {
   "sources.refresh": "Procurar de novo",
   "sources.loadFailed": "Não deu pra listar os dispositivos: {error}",
 
+  "setup.cameraGone": "A câmera “{device}” não está mais disponível — voltei pra sem câmera.",
+  "setup.micGone": "O microfone “{device}” não está mais disponível — voltei pra sem áudio.",
+  "setup.outputGone": "A saída de áudio “{device}” não está mais disponível — voltei pra saída padrão.",
+
   "preview.title": "Prévia",
   "preview.hint": "Arraste a câmera pro canto que você quiser — é exatamente assim que ela entra no vídeo.",
   "preview.hintNoCam": "Escolha uma câmera pra sobrepor no canto da tela.",
@@ -128,6 +132,10 @@ const en: Record<MessageKey, string> = {
   "sources.refresh": "Look again",
   "sources.loadFailed": "Couldn't list the devices: {error}",
 
+  "setup.cameraGone": "The camera “{device}” isn't available anymore — switched back to no camera.",
+  "setup.micGone": "The microphone “{device}” isn't available anymore — switched back to no audio.",
+  "setup.outputGone": "The audio output “{device}” isn't available anymore — switched back to the default output.",
+
   "preview.title": "Preview",
   "preview.hint": "Drag the camera to whichever corner you want — that's exactly how it lands in the video.",
   "preview.hintNoCam": "Pick a camera to overlay in the corner of the screen.",
@@ -221,6 +229,10 @@ const es: Record<MessageKey, string> = {
   "sources.empty": "No se encontraron dispositivos",
   "sources.refresh": "Buscar de nuevo",
   "sources.loadFailed": "No se pudieron listar los dispositivos: {error}",
+
+  "setup.cameraGone": "La cámara «{device}» ya no está disponible — volví a sin cámara.",
+  "setup.micGone": "El micrófono «{device}» ya no está disponible — volví a sin audio.",
+  "setup.outputGone": "La salida de audio «{device}» ya no está disponible — volví a la salida predeterminada.",
 
   "preview.title": "Vista previa",
   "preview.hint": "Arrastra la cámara a la esquina que quieras — así es exactamente como entra en el vídeo.",

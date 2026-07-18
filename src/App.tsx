@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -18,7 +18,7 @@ import {
   type RecordSpec,
   type SysAudioSpec,
 } from "./lib/args";
-import { t } from "./lib/i18n";
+import { t, type MessageKey } from "./lib/i18n";
 import {
   formatBytes,
   formatDuration,
@@ -28,6 +28,13 @@ import {
   type DeviceList,
   type SysAudioInfo,
 } from "./lib/sources";
+import {
+  labelsFor,
+  loadSetup,
+  reconcileSetup,
+  saveSetup,
+  type DroppedKind,
+} from "./lib/setup";
 import { useUi } from "./state/ui";
 
 // Fora do Tauri (smoke no navegador com `npm run preview`) não há back: a UI
@@ -71,6 +78,13 @@ interface AnnotSnapshot {
  *  registra de verdade é o Rust; isto é rótulo, não configuração. */
 const SC_PEN = "Ctrl+Shift+D";
 const SC_CLEAR = "Ctrl+Shift+X";
+
+/** Qual aviso mostrar quando um device salvo sumiu, por tipo. */
+const DROP_KEY: Record<DroppedKind, MessageKey> = {
+  camera: "setup.cameraGone",
+  mic: "setup.micGone",
+  output: "setup.outputGone",
+};
 
 const platform: Platform =
   typeof navigator !== "undefined" && navigator.userAgent.includes("Windows") ? "windows" : "linux";
@@ -116,26 +130,38 @@ export default function App() {
   const setSettingsOpen = useUi((s) => s.setSettingsOpen);
   const pushToast = useUi((s) => s.pushToast);
 
+  // Setup salvo da sessão anterior (as "boxes marcadas"). Lido UMA vez. Os
+  // campos de LAYOUT já saem restaurados aqui (não dependem de device existir);
+  // os DEVICES começam vazios e só entram depois de reconciliados contra a
+  // lista real no boot (ver o efeito de restauração) — restaurar um id de
+  // device que sumiu seria pior que não restaurar.
+  const saved0 = useMemo(() => loadSetup(), []);
+  const initial = useMemo(() => reconcileSetup(saved0, EMPTY).setup, [saved0]);
+  // Vira `true` só quando a reconciliação do boot terminou. Antes disso o efeito
+  // que persiste fica quieto: salvar os defaults iniciais aqui apagaria o setup
+  // salvo antes mesmo de restaurá-lo.
+  const restored = useRef(false);
+
   const [devices, setDevices] = useState<DeviceList>(EMPTY);
   const [loading, setLoading] = useState(isTauri);
   const [ffOk, setFfOk] = useState(true); // otimista: só avisa depois de confirmar
-  const [screen, setScreen] = useState("");
-  const [camera, setCamera] = useState("");
-  const [mic, setMic] = useState("");
+  const [screen, setScreen] = useState(initial.screen);
+  const [camera, setCamera] = useState(initial.camera);
+  const [mic, setMic] = useState(initial.mic);
 
   // Áudio do sistema (WASAPI loopback, capturado no Rust — ver sysaudio.rs).
-  const [output, setOutput] = useState("");
-  const [sysOn, setSysOn] = useState(false);
+  const [output, setOutput] = useState(initial.output);
+  const [sysOn, setSysOn] = useState(initial.sysOn);
   /** Por que NÃO dá pra capturar aqui (sem placa de saída, Linux, driver
    *  recusando). Preenchido = o controle fica desligado e a tela diz o motivo. */
   const [sysErr, setSysErr] = useState<string | null>(null);
-  const [tracks, setTracks] = useState<AudioTracks>("mixed");
+  const [tracks, setTracks] = useState<AudioTracks>(initial.tracks);
   const [levels, setLevels] = useState({ mic: 0, system: 0 });
   const [micMeterErr, setMicMeterErr] = useState<string | null>(null);
   const [sysMeterErr, setSysMeterErr] = useState<string | null>(null);
 
-  const [corner, setCorner] = useState<Corner>("br");
-  const [sizePct, setSizePct] = useState(25);
+  const [corner, setCorner] = useState<Corner>(initial.corner);
+  const [sizePct, setSizePct] = useState(initial.sizePct);
   const [outDir, setOutDir] = useState("");
   const [pattern, setPattern] = useState("gravacao-{date}-{time}");
   const [encoder, setEncoder] = useState<Encoder | "">("");
@@ -170,10 +196,44 @@ export default function App() {
     }
   }, [pushToast]);
 
+  // Restauração do boot: PRIMEIRA carga dos dispositivos, reconciliando o setup
+  // salvo contra a lista real. É aqui que um device que sumiu (webcam
+  // desplugada) cai no default e o usuário é avisado — em vez de o ffmpeg
+  // engasgar na hora de gravar com um id fantasma. Separado do `load` (o botão
+  // "Procurar de novo") de propósito: replug no meio da sessão é silencioso;
+  // restaurar de uma sessão antiga é que merece o aviso.
+  const bootRestore = useCallback(async () => {
+    if (!isTauri) return;
+    setLoading(true);
+    try {
+      const list = await invoke<DeviceList>("list_devices");
+      setDevices(list);
+      const { setup, dropped } = reconcileSetup(saved0, list);
+      setScreen(setup.screen);
+      setCamera(setup.camera);
+      setMic(setup.mic);
+      setOutput(setup.output);
+      setSysOn(setup.sysOn);
+      setTracks(setup.tracks);
+      setCorner(setup.corner);
+      setSizePct(setup.sizePct);
+      for (const d of dropped) {
+        pushToast("info", t(DROP_KEY[d.kind], { device: d.label }));
+      }
+    } catch (e) {
+      pushToast("error", t("sources.loadFailed", { error: String(e) }));
+    } finally {
+      // Só a partir daqui o efeito de persistência pode gravar: antes disso o
+      // que está na tela ainda são os defaults, não a escolha do usuário.
+      restored.current = true;
+      setLoading(false);
+    }
+  }, [pushToast, saved0]);
+
   useEffect(() => {
     if (!isTauri) return;
     invoke<boolean>("ffmpeg_ok").then(setFfOk).catch(() => setFfOk(false));
-    void load();
+    void bootRestore();
     invoke<string>("rec_default_dir").then(setOutDir).catch(() => setOutDir(""));
     // Sonda de verdade (codifica 0,1s) — pode demorar; a UI mostra "testando…".
     invoke<Encoder>("rec_pick_encoder").then(setEncoder).catch(() => setEncoder("libx264"));
@@ -185,7 +245,29 @@ export default function App() {
     // desta webview — o botão tem que refletir o que está de pé na tela, não o
     // que o React acha que está.
     invoke<AnnotSnapshot>("annot_state").then(setAnnot).catch(() => {});
-  }, [load]);
+  }, [bootRestore]);
+
+  // Persistência do setup: salva a cada mudança de escolha, mas só depois que a
+  // restauração do boot terminou (ver `restored`). Guardar aqui, e não no
+  // unmount, é o robusto: fechar a janela do Tauri nem sempre passa por um
+  // unmount limpo, e queremos o setup salvo mesmo se o app for morto.
+  useEffect(() => {
+    if (!isTauri || !restored.current) return;
+    saveSetup({
+      screen,
+      camera,
+      mic,
+      output,
+      sysOn,
+      tracks,
+      corner,
+      sizePct,
+      // Guarda o rótulo dos escolhidos AGORA: se um deles sumir na próxima
+      // sessão, é só assim que o aviso consegue dizer o nome (o device já não
+      // estará na lista pra consultar).
+      labels: labelsFor(devices, [screen, camera, mic, output]),
+    });
+  }, [screen, camera, mic, output, sysOn, tracks, corner, sizePct, devices]);
 
   // A sonda decide se o áudio do sistema é OFERECÍVEL nesta máquina. Ela não
   // captura nada — só pergunta ao Windows se existe saída de áudio e qual é.
