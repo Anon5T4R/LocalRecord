@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - "v*"
+  # Disparo manual = build de TESTE (nao publica release: ver a tagName abaixo).
+  # Sem isto, a unica forma de validar uma mudanca de build e cortando release.
+  workflow_dispatch:
 
 jobs:
   build:
@@ -82,7 +85,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
+          # So preenche em build de TAG. Fora de tag, github.ref_name e o nome do
+          # BRANCH -- um disparo manual da main criaria uma release chamada "main".
+          # O gate vai na tagName e NAO no passo: o tauri-action e quem CONSTROI o
+          # app. Sem tagName ele so builda e sobe artefatos, que e o que queremos.
+          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
           releaseName: "LocalRecord ${{ github.ref_name }}"
           releaseBody: |
             ## LocalRecord ${{ github.ref_name }}
