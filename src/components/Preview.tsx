@@ -32,6 +32,8 @@ export default function Preview(props: Props) {
   const { grabber, cameraId, corner, sizePct, onCornerChange, disabled } = props;
   const [thumb, setThumb] = useState<string>("");
   const [camError, setCamError] = useState("");
+  /** Por que o quadro da tela não veio. Vazio = não houve erro. */
+  const [shotErr, setShotErr] = useState("");
   const [dragging, setDragging] = useState<{ x: number; y: number } | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -63,13 +65,22 @@ export default function Preview(props: Props) {
       setThumb("");
       return;
     }
+    setShotErr("");
     invoke<number[]>("rec_screen_thumb", { args: buildThumbArgs(grabber) })
       .then((bytes) => {
         if (!alive) return;
         url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "image/jpeg" }));
         setThumb(url);
       })
-      .catch(() => setThumb(""));
+      .catch((e) => {
+        // O erro era ENGOLIDO aqui, e o palco só dizia "sem prévia da tela" —
+        // uma mensagem que serve pra qualquer causa e por isso não serve pra
+        // nenhuma. Foi o que manteve este bug (B6) sem diagnóstico por várias
+        // rodadas: o mesmo comando roda perfeitamente pela linha de comando.
+        if (!alive) return;
+        setThumb("");
+        setShotErr(String(e));
+      });
     return () => {
       alive = false;
       if (url) URL.revokeObjectURL(url);
@@ -172,6 +183,7 @@ export default function Preview(props: Props) {
         ) : (
           <div className="stage-empty">
             <span className="muted small">{t("preview.noShot")}</span>
+            {shotErr && <span className="muted small stage-empty-why">{shotErr}</span>}
           </div>
         )}
 
