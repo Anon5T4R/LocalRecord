@@ -4,6 +4,8 @@ import {
   buildRecordArgs,
   buildRemuxArgs,
   expandPattern,
+  pickCamMode,
+  type CamMode,
   type RecordSpec,
   type SysAudioSpec,
 } from "../args";
@@ -287,5 +289,77 @@ describe("modo da câmera", () => {
     const args = buildRecordArgs({ ...base, platform: "linux", grabber: "x11grab", camera: { id: "Cam", corner: "br", sizePct: 25 } });
     expect(args).toContain("v4l2");
     expect(args.filter((a) => a === "-framerate")).toHaveLength(1); // só o do x11grab
+  });
+});
+
+describe("pickCamMode — o achado dos testes reais de 2026-07-18", () => {
+  // Os modos típicos de uma webcam integrada. O do meio é o vilão: 1080p cru
+  // que só entrega 5 fps, e era o que o dshow escolhia sozinho.
+  const MODOS: CamMode[] = [
+    { width: 640, height: 480, fps: 30, vcodec: null, pixelFormat: "yuyv422" },
+    { width: 1920, height: 1080, fps: 5, vcodec: null, pixelFormat: "yuyv422" },
+    { width: 1280, height: 720, fps: 30, vcodec: "mjpeg", pixelFormat: null },
+  ];
+
+  it("nunca escolhe um modo que não dá o fps pedido", () => {
+    // A regra que existe pra impedir 2,7 fps: o 1080p a 5 fps está fora,
+    // por maior e mais nítido que seja.
+    expect(pickCamMode(MODOS, 30, 24)?.fps).toBe(30);
+    expect(pickCamMode(MODOS, 30, 24)?.height).not.toBe(1080);
+  });
+
+  it("escolhe o menor que ainda cobre o PiP", () => {
+    // 24% de 1920 = ~460px: o 640x480 basta e é o mais barato dos que servem.
+    expect(pickCamMode(MODOS, 30, 24)).toMatchObject({ width: 640, height: 480 });
+    // PiP grande (50% = 960px) não cabe no 640; sobe pro 1280 mjpeg.
+    expect(pickCamMode(MODOS, 30, 50)).toMatchObject({ width: 1280, vcodec: "mjpeg" });
+  });
+
+  it("abre mão da largura antes de abrir mão do fps", () => {
+    // 60% = 1152px, e nenhum modo de 30fps chega lá. Prefere o maior... não:
+    // prefere manter o fps e aceitar menos nitidez — PiP menos nítido some no
+    // vídeo, metade dos quadros não.
+    const m = pickCamMode(MODOS, 30, 60);
+    expect(m?.fps).toBe(30);
+  });
+
+  it("sem modo que sirva, devolve null e o ffmpeg decide (não recusa gravar)", () => {
+    expect(pickCamMode(MODOS, 60, 24)).toBeNull();
+    expect(pickCamMode([], 30, 24)).toBeNull();
+  });
+
+  it("o modo escolhido vira args de ABERTURA, antes do -i", () => {
+    const mode = pickCamMode(MODOS, 30, 24)!;
+    const args = buildRecordArgs({
+      ...base,
+      camera: { id: "Integrated Camera", corner: "br", sizePct: 24, mode },
+    });
+    // Do `dshow` ate o `-i` DELE: o primeiro `-i` da linha e o da tela.
+    const d = args.indexOf("dshow");
+    const abertura = args.slice(d, args.indexOf("-i", d)).join(" ");
+    expect(abertura).toContain("-video_size 640x480");
+    expect(abertura).toContain("-pixel_format yuyv422");
+    expect(abertura).toContain("-framerate 30");
+    // Modo cru não pode levar `-vcodec` junto: são alternativas.
+    expect(abertura).not.toContain("-vcodec");
+  });
+
+  it("modo comprimido usa -vcodec e não -pixel_format", () => {
+    const mode = MODOS[2];
+    const line = buildRecordArgs({
+      ...base,
+      camera: { id: "Cam", corner: "br", sizePct: 24, mode },
+    }).join(" ");
+    expect(line).toContain("-vcodec mjpeg");
+    expect(line).not.toContain("-pixel_format");
+  });
+
+  it("sem modo, os args ficam como eram (o dshow escolhe)", () => {
+    const line = buildRecordArgs({
+      ...base,
+      camera: { id: "Cam", corner: "br", sizePct: 24, mode: null },
+    }).join(" ");
+    expect(line).not.toContain("-video_size");
+    expect(line).toContain("-framerate 30 -i video=Cam");
   });
 });

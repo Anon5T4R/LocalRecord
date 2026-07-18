@@ -47,6 +47,11 @@ export default function AnnotOverlay() {
   // O traço em curso vive num ref, não no state: um `setState` por evento de
   // mouse (dezenas por segundo) faria a caneta arrastar atrás do cursor.
   const live = useRef<Item | null>(null);
+  // A caixinha de texto. Precisa de ref porque o `autoFocus` do React roda na
+  // MONTAGEM, e nesse instante a janela do overlay ainda pode não ser a de
+  // primeiro plano — quando ela vira, o WebView2 devolve o foco pro documento
+  // e o campo fica com o cursor piscando sem receber tecla nenhuma.
+  const inputRef = useRef<HTMLInputElement>(null);
   const drag = useRef<{ dx: number; dy: number } | null>(null);
 
   /** Redesenha tudo. Objetos → pixels acontece só aqui. */
@@ -140,11 +145,21 @@ export default function AnnotOverlay() {
     if (tool === "text") {
       setTyping(p);
       setDraft("");
-      // A janela do overlay é `focus: false` (tauri.conf.json) e no Windows nem
-      // o clique a ativa — sem este pedido o cursor pisca na caixinha e as
-      // teclas vão pro app de baixo. Só aqui, não ao ligar a caneta: quem só
+      // A janela do overlay nasce `focus: false` (tauri.conf.json) e no Windows
+      // o clique não a traz pro primeiro plano — sem este pedido as teclas vão
+      // pro aplicativo de baixo. Só aqui, não ao ligar a caneta: quem apenas
       // rabisca continua sem perder o foco do que estava fazendo.
-      if (isTauri) void invoke("annot_focus").catch(() => {});
+      //
+      // A ORDEM importa e foi o que derrubou a primeira tentativa (v0.4.0):
+      // pedir o foco e seguir em frente não basta. O `set_focus` do Tauri é uma
+      // mensagem pro laço de eventos, então a janela vira primeiro plano DEPOIS
+      // do input já ter montado — e aí o WebView2 põe o foco no documento. Por
+      // isso o campo é focado de novo QUANDO o pedido volta.
+      if (isTauri) {
+        void invoke("annot_focus")
+          .then(() => inputRef.current?.focus())
+          .catch(() => {});
+      }
       return;
     }
     (e.target as Element).setPointerCapture?.(e.pointerId);
@@ -225,6 +240,7 @@ export default function AnnotOverlay() {
 
       {typing && (
         <input
+          ref={inputRef}
           className="annot-text-input"
           style={{ left: typing.x, top: typing.y - 28, color }}
           autoFocus

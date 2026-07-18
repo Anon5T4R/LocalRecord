@@ -56,6 +56,7 @@ pub fn run() {
             ffmpeg::ffmpeg_ok,
             ffmpeg::ff_cancel,
             devices::list_devices,
+            devices::camera_modes,
             sysaudio::sys_audio_probe,
             sysaudio::sys_audio_start,
             sysaudio::sys_audio_stop,

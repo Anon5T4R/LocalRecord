@@ -48,12 +48,40 @@ const ERR_TAIL: usize = 30;
 /// produziram em 2026-07-18 (`docs/planos/localrecord-achados-teste-real.md`).
 ///
 /// `887a0026` é o `DXGI_ERROR_ACCESS_LOST` da Desktop Duplication API — o
-/// `ddagrab` perde o acesso e não volta sozinho.
-const CAPTURE_LOST_MARKERS: [&str; 3] = ["AcquireNextFrame failed", "887a0026", "Error during demuxing"];
+/// `ddagrab` perde o acesso e não volta sozinho. Estes dois só saem da captura
+/// de tela (nome do filtro e código da DXGI), então podem ser procurados em
+/// qualquer lugar do stderr.
+const CAPTURE_LOST_MARKERS: [&str; 2] = ["AcquireNextFrame failed", "887a0026"];
 
-/// A captura de tela morreu no meio? Procura os marcadores no rabo do stderr.
+/// `Error during demuxing` é de QUALQUER entrada — o ffmpeg usa a mesma frase
+/// pro cano do áudio do sistema (`[in#3/s16le] Error during demuxing: Invalid
+/// argument`, que aconteceu nos TRÊS takes de 2026-07-18 07:0x). Procurar essa
+/// frase solta acusava "a captura de tela parou" numa gravação em que ela não
+/// tinha parado.
+///
+/// A tela é SEMPRE a entrada 0 (ver `buildRecordArgs` — a ordem do layout de
+/// índices é contrato do front), então o prefixo `in#0/` é o que separa uma
+/// coisa da outra.
+const DEMUX_ERROR: &str = "Error during demuxing";
+const SCREEN_INPUT: &str = "in#0/";
+
+/// A captura de TELA morreu no meio? Decide linha a linha, não no texto inteiro:
+/// procurar as duas coisas no bolo faria a frase genérica de uma linha casar com
+/// o `in#0/` de outra.
 fn capture_lost(tail: &str) -> bool {
-    CAPTURE_LOST_MARKERS.iter().any(|m| tail.contains(m))
+    tail.lines().any(|l| {
+        CAPTURE_LOST_MARKERS.iter().any(|m| l.contains(m))
+            || (l.contains(DEMUX_ERROR) && l.contains(SCREEN_INPUT))
+    })
+}
+
+/// O cano do áudio do sistema quebrou no meio? Mesma frase genérica, outra
+/// entrada: o PCM cru é a única entrada `s16le` do grafo.
+///
+/// Vale por si porque o `feed_error` do lado Rust só enxerga o que ACONTECE no
+/// nosso lado do cano; quando quem recusa o dado é o ffmpeg, só o stderr conta.
+fn sys_audio_lost(tail: &str) -> bool {
+    tail.lines().any(|l| l.contains(DEMUX_ERROR) && l.contains("s16le"))
 }
 
 /// Abaixo de qual fração do fps alvo a gravação conta como degradada.
@@ -675,6 +703,14 @@ pub fn rec_stop(
     let tail = rec.err.lock().map(|v| v.iter().cloned().collect::<Vec<_>>().join("\n")).unwrap_or_default();
     let lost = capture_lost(&tail);
 
+    // O ffmpeg recusando o PCM do cano conta como áudio do sistema perdido, mesmo
+    // que o nosso lado do cano não tenha visto problema nenhum. Nos três takes de
+    // 2026-07-18 07:0x foi exatamente assim: `feed_error` limpo e o take sem o som
+    // do computador.
+    let sys_audio_error = sys_audio_error.or_else(|| {
+        sys_audio_lost(&tail).then(|| "o ffmpeg recusou o canal do áudio do sistema".to_string())
+    });
+
     // O log fica quando ALGO deu errado; some quando o take saiu limpo. Guardar
     // sempre encheria a pasta de gravações de `.log` que ninguém vai ler — e
     // arquivo que sempre existe é arquivo que ninguém percebe.
@@ -820,7 +856,53 @@ mod tests {
         // Cada marcador sozinho também tem que pegar: o ffmpeg nem sempre cospe
         // os dois, e um take de 2 minutos empurra o começo pra fora do rabo.
         assert!(capture_lost("AcquireNextFrame failed: 887a0026"));
-        assert!(capture_lost("Error during demuxing: whatever"));
+        // Sem saber DE QUAL entrada, a frase genérica não acusa nada — foi a
+        // correção de 2026-07-18 (ver `cano_do_audio_quebrado_...`).
+        assert!(!capture_lost("Error during demuxing: whatever"));
+        assert!(capture_lost("[in#0/lavfi @ 0] Error during demuxing: whatever"));
+    }
+
+    #[test]
+    fn cano_do_audio_quebrado_nao_e_captura_de_tela_perdida() {
+        // REGRESSÃO de 2026-07-18. A primeira versão procurava a frase
+        // "Error during demuxing" solta, e ela sai de QUALQUER entrada. Esta
+        // linha é do take das 07:04:22, em que a tela NÃO parou (51,8 s de
+        // gravação, nenhum `AcquireNextFrame` no log) — e o app teria dito na
+        // cara do usuário que a captura de tela morreu.
+        let so_audio = "[in#3/s16le @ 00000137c5521680] Error during demuxing: Invalid argument";
+        assert!(!capture_lost(so_audio));
+        // E o inverso: é o cano do áudio, e isso o app precisa saber.
+        assert!(sys_audio_lost(so_audio));
+
+        // A mesma frase vinda da TELA continua contando como captura perdida.
+        let da_tela = "[in#0/lavfi @ 000001c136c74cc0] Error during demuxing: Generic error in an external library";
+        assert!(capture_lost(da_tela));
+        assert!(!sys_audio_lost(da_tela));
+    }
+
+    #[test]
+    fn as_duas_falhas_juntas_sao_lidas_separadas() {
+        // O log real do take das 07:03:43 tem as duas — a decisão é por LINHA,
+        // senão o `in#0/` de uma casaria com a frase genérica da outra.
+        let real = "[Parsed_ddagrab_0 @ 000001c1] AcquireNextFrame failed: 887a0026\n\
+                    [in#0/lavfi @ 000001c1] Error during demuxing: Generic error in an external library\n\
+                    [in#1/dshow @ 000001c1] real-time buffer [Integrated Camera] too full!\n\
+                    [in#3/s16le @ 000001c1] Error during demuxing: Invalid argument";
+        assert!(capture_lost(real));
+        assert!(sys_audio_lost(real));
+    }
+
+    #[test]
+    fn buffer_cheio_da_camera_nao_acusa_ninguem() {
+        // A linha mais repetida dos logs reais (dezenas por take). Ela indica um
+        // problema de VERDADE — a câmera não é consumida a tempo — mas não é
+        // captura de tela perdida nem áudio perdido, e confundir as três faria
+        // todo take com câmera acender os dois alarmes errados.
+        let buf = "[in#1/dshow @ 00000137bd4b8200] real-time buffer [Integrated Camera] \
+                   [video input] too full or near too full (96% of size: 128000000 \
+                   [rtbufsize parameter])! frame dropped!";
+        assert!(!capture_lost(buf));
+        assert!(!sys_audio_lost(buf));
     }
 
     #[test]

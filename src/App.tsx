@@ -10,7 +10,9 @@ import {
   buildRecordArgs,
   buildRemuxArgs,
   expandPattern,
+  pickCamMode,
   type AudioTracks,
+  type CamMode,
   type Corner,
   type Encoder,
   type Grabber,
@@ -156,6 +158,9 @@ export default function App() {
   const [ffOk, setFfOk] = useState(true); // otimista: só avisa depois de confirmar
   const [screen, setScreen] = useState(initial.screen);
   const [camera, setCamera] = useState(initial.camera);
+  // Modos que a câmera escolhida oferece de verdade. Vazio = não deu pra
+  // enumerar (Linux, ou o dispositivo não respondeu) e aí o ffmpeg decide.
+  const [camModes, setCamModes] = useState<CamMode[]>([]);
   const [mic, setMic] = useState(initial.mic);
 
   // Áudio do sistema (WASAPI loopback, capturado no Rust — ver sysaudio.rs).
@@ -292,6 +297,24 @@ export default function App() {
       });
   }, [output]);
 
+  // Os modos da câmera escolhida. Perguntar ao DISPOSITIVO em vez de deixar o
+  // dshow escolher foi o conserto do bug de 2026-07-18: ele escolhia 1080p cru,
+  // que a webcam só entrega a 5 fps, e a gravação inteira ia junto.
+  useEffect(() => {
+    if (!isTauri || !camera) {
+      setCamModes([]);
+      return;
+    }
+    let alive = true;
+    invoke<CamMode[]>("camera_modes", { id: camera })
+      .then((m) => alive && setCamModes(m))
+      // Falhar aqui não impede gravar: sem modos, volta ao comportamento antigo.
+      .catch(() => alive && setCamModes([]));
+    return () => {
+      alive = false;
+    };
+  }, [camera]);
+
   // Progresso vem do próprio ffmpeg (`-progress pipe:1`), não de um cronômetro
   // nosso: o número na tela é o tempo que foi REALMENTE parar no arquivo.
   useEffect(() => {
@@ -395,7 +418,9 @@ export default function App() {
         platform,
         grabber: GRABBER,
         fps: FPS,
-        camera: camera ? { id: camera, corner, sizePct } : null,
+        camera: camera
+          ? { id: camera, corner, sizePct, mode: pickCamMode(camModes, FPS, sizePct) }
+          : null,
         mic: mic || null,
         sysAudio,
         audioTracks: tracks,

@@ -164,6 +164,93 @@ fn v4l2_cameras() -> Vec<Device> {
     out
 }
 
+/// Um modo que a câmera realmente oferece.
+///
+/// Existe por causa dos testes reais de 2026-07-18: sem modo explícito, o dshow
+/// escolhe sozinho — e o log encheu de `real-time buffer [Integrated Camera]
+/// too full` até 96 %, com a gravação inteira caindo pra 2,7 fps. **Medi aqui
+/// que nem o grafo nem o encoder são o gargalo** (tela + câmera sintética 1080p
+/// + `overlay` + `h264_amf` deram 29,6 fps em duas rodadas), então o que sobra é
+/// o modo que o dispositivo entrega.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CamMode {
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+    /// `mjpeg` etc. quando o modo é comprimido; `None` = pixel format cru.
+    pub vcodec: Option<String>,
+    /// `yuyv422` etc. quando é cru; `None` = comprimido.
+    pub pixel_format: Option<String>,
+}
+
+/// Lê a saída do `-list_options true`. Pura pra ser testável sem câmera.
+///
+/// As linhas reais têm esta cara (uma por modo):
+/// ```text
+/// [dshow @ ...]   vcodec=mjpeg  min s=1280x720 fps=5 max s=1280x720 fps=30
+/// [dshow @ ...]   pixel_format=yuyv422  min s=640x480 fps=5 max s=640x480 fps=30
+/// ```
+/// O `max` é o que interessa: é o teto real daquele modo.
+fn parse_cam_modes(stderr: &str) -> Vec<CamMode> {
+    let mut out = Vec::new();
+    for line in stderr.lines() {
+        // `max s=` porque o `min` do mesmo modo repetiria tudo com fps inútil.
+        let Some(max) = line.split("max s=").nth(1) else { continue };
+        let mut it = max.split_whitespace();
+        let Some(size) = it.next() else { continue };
+        let (w, h) = size.split_once('x').unwrap_or(("", ""));
+        let (Ok(width), Ok(height)) = (w.parse::<u32>(), h.parse::<u32>()) else { continue };
+        let fps = it
+            .find_map(|t| t.strip_prefix("fps="))
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.0);
+
+        let campo = |chave: &str| {
+            line.split(chave)
+                .nth(1)
+                .and_then(|r| r.split_whitespace().next())
+                .map(|s| s.to_string())
+        };
+        out.push(CamMode {
+            width,
+            height,
+            fps,
+            vcodec: campo("vcodec="),
+            pixel_format: campo("pixel_format="),
+        });
+    }
+    out
+}
+
+/// Os modos que uma câmera oferece. Lista vazia = não deu pra descobrir (e aí o
+/// front não força modo nenhum, que é o comportamento antigo).
+#[tauri::command(async)]
+pub fn camera_modes(app: tauri::AppHandle, id: String) -> Result<Vec<CamMode>, String> {
+    #[cfg(windows)]
+    {
+        let ffmpeg = resolve_bin(&app, FFMPEG_BIN)?;
+        let mut cmd = Command::new(&ffmpeg);
+        // Sai com erro de propósito, igual ao `-list_devices`: o que importa é
+        // o texto no stderr, não o status.
+        cmd.args(["-hide_banner", "-list_options", "true", "-f", "dshow", "-i"])
+            .arg(format!("video={}", id))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        no_window(&mut cmd);
+        let out = cmd.output().map_err(|e| format!("falha ao rodar ffmpeg: {}", e))?;
+        Ok(parse_cam_modes(&String::from_utf8_lossy(&out.stderr)))
+    }
+
+    #[cfg(not(windows))]
+    {
+        // v4l2 não tem o mesmo `-list_options`; no Linux o modo segue automático.
+        let _ = (&app, &id);
+        Ok(Vec::new())
+    }
+}
+
 /// Lista telas, câmeras e microfones pra UI escolher a fonte.
 #[tauri::command(async)]
 pub fn list_devices(app: tauri::AppHandle) -> Result<DeviceList, String> {
@@ -193,6 +280,38 @@ pub fn list_devices(app: tauri::AppHandle) -> Result<DeviceList, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Amostra real do `-list_options` de uma webcam integrada.
+    const SAMPLE_MODES: &str = r#"
+[dshow @ 000001f9] DirectShow video device options (from video devices)
+[dshow @ 000001f9]  Pin "Captura" (alternative pin name "0")
+[dshow @ 000001f9]   pixel_format=yuyv422  min s=640x480 fps=5 max s=640x480 fps=30
+[dshow @ 000001f9]   pixel_format=yuyv422  min s=1920x1080 fps=5 max s=1920x1080 fps=5
+[dshow @ 000001f9]   vcodec=mjpeg  min s=1280x720 fps=5 max s=1280x720 fps=30
+"#;
+
+    #[test]
+    fn le_os_modos_da_camera() {
+        let m = parse_cam_modes(SAMPLE_MODES);
+        assert_eq!(m.len(), 3);
+        assert_eq!(m[0], CamMode { width: 640, height: 480, fps: 30.0,
+            vcodec: None, pixel_format: Some("yuyv422".into()) });
+        // O caso que explica o bug real: 1080p CRU so entrega 5 fps. Pedir 30
+        // nesse modo e pedir o impossivel — e foi o que o app fez ate a v0.4.1,
+        // deixando o dshow escolher.
+        assert_eq!(m[1].fps, 5.0);
+        assert_eq!(m[1].width, 1920);
+        assert_eq!(m[2], CamMode { width: 1280, height: 720, fps: 30.0,
+            vcodec: Some("mjpeg".into()), pixel_format: None });
+    }
+
+    #[test]
+    fn linhas_que_nao_sao_modo_sao_ignoradas() {
+        assert!(parse_cam_modes("").is_empty());
+        assert!(parse_cam_modes("[dshow @ 0] DirectShow video device options").is_empty());
+        // Tamanho quebrado nao vira modo com zero — vira modo nenhum.
+        assert!(parse_cam_modes("[dshow @ 0]  max s=axb fps=30").is_empty());
+    }
 
     /// Amostra real do formato moderno (ffmpeg 6/7), com o `(video)`/`(audio)`.
     const SAMPLE_MODERNO: &str = r#"

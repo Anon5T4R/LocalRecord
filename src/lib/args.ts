@@ -22,12 +22,61 @@ export type Grabber = "ddagrab" | "gdigrab" | "x11grab";
  *  em `-encoders` não prova que o hardware existe (ver record.rs). */
 export type Encoder = "h264_nvenc" | "h264_qsv" | "h264_amf" | "libx264";
 
+/** Um modo que a câmera oferece de verdade (vem do `camera_modes` do Rust,
+ *  que roda `-list_options true` no dispositivo). */
+export interface CamMode {
+  width: number;
+  height: number;
+  fps: number;
+  vcodec: string | null;
+  pixelFormat: string | null;
+}
+
 export interface CameraSpec {
   /** Id CRU do dispositivo, como o ffmpeg quer (`video=<id>` no dshow). */
   id: string;
   corner: Corner;
   /** Largura da câmera em % da largura da TELA (o preview manda este número). */
   sizePct: number;
+  /** Modo escolhido. `null` = não deu pra enumerar; aí o dshow decide (o
+   *  comportamento até a v0.4.1, que é justamente o que quebrava). */
+  mode?: CamMode | null;
+}
+
+/** Largura de tela assumida pra converter `sizePct` em pixels quando se escolhe
+ *  o modo. 1920 cobre o caso comum e errar aqui só muda a folga: a conta existe
+ *  pra não capturar 1080p da webcam pra desenhar um quadradinho de 460 px. */
+const TELA_REF_W = 1920;
+
+/**
+ * Escolhe o modo da câmera. Regra, na ordem:
+ *
+ *  1. **Tem que dar o fps pedido.** Foi o achado dos testes reais: a webcam
+ *     oferecia 1920x1080 CRU a 5 fps, o dshow escolheu esse, e a gravação
+ *     INTEIRA desabou pra 2,7 fps — a tela também, porque o `overlay` anda no
+ *     passo da entrada mais lenta. Medi que o grafo e o encoder aguentam 29,6
+ *     fps; quem não aguentava era o modo do dispositivo.
+ *  2. **Largura suficiente pro PiP.** A câmera aparece com `sizePct` da largura
+ *     da tela; capturar muito acima disso é jogar banda USB e CPU fora pra
+ *     depois reduzir no `scale2ref`.
+ *  3. **O menor que sobrar** — e, no empate, comprimido (mjpeg) na frente do
+ *     cru: é o que cabe no barramento.
+ *
+ * Sem nenhum modo que sirva, devolve `null` e o ffmpeg segue escolhendo — pior
+ * que escolher certo, melhor que recusar a gravar.
+ */
+export function pickCamMode(modes: CamMode[], targetFps: number, sizePct: number): CamMode | null {
+  const precisa = Math.round((TELA_REF_W * Math.min(60, Math.max(5, sizePct))) / 100);
+  const servem = modes.filter((m) => m.fps >= targetFps && m.width >= precisa);
+  // Nenhum dá o fps E a largura: relaxa a largura antes do fps. Um PiP um pouco
+  // menos nítido é invisível no vídeo final; metade dos quadros não é.
+  const pool = servem.length > 0 ? servem : modes.filter((m) => m.fps >= targetFps);
+  if (pool.length === 0) return null;
+  return pool.slice().sort((a, b) => {
+    const area = a.width * a.height - b.width * b.height;
+    if (area !== 0) return area;
+    return (a.vcodec ? 0 : 1) - (b.vcodec ? 0 : 1);
+  })[0];
 }
 
 /** O áudio do sistema NÃO é uma entrada de dispositivo do ffmpeg: é PCM cru que
@@ -187,11 +236,25 @@ export function buildRecordArgs(s: RecordSpec): string[] {
       // ("real-time buffer full") em máquina ocupada — que é o caso normal
       // de quem está gravando um tutorial.
       //
-      // `-framerate` ANTES do `-i`: sem ele o dshow escolhe um modo sozinho, e
-      // câmera que oferece 30 e 10 fps pode entregar os 10 — a gravação inteira
-      // fica presa no ritmo da webcam. Pedir o mesmo fps da tela mantém as duas
-      // entradas no mesmo compasso.
-      args.push("-rtbufsize", "128M", "-f", "dshow", "-framerate", String(s.fps), "-i", `video=${s.camera.id}`);
+      // Tudo isto vai ANTES do `-i`: são opções de ABERTURA do dispositivo.
+      //
+      // O `-framerate` sozinho (v0.4.0) não bastou. Nos testes reais o dshow
+      // escolheu 1920x1080 CRU, que a webcam só entrega a 5 fps, e a gravação
+      // inteira desabou junto — o `overlay` anda no passo da entrada mais lenta,
+      // então a TELA também caiu pra 2,7 fps. O log mostrava o buffer da câmera
+      // enchendo até 96 %.
+      //
+      // `-video_size` e o codec/pixel format do modo escolhido são o que tira a
+      // decisão do dshow e põe em `pickCamMode`, que sabe o que a gravação pediu.
+      args.push("-rtbufsize", "128M", "-f", "dshow", "-framerate", String(s.fps));
+      const m = s.camera.mode;
+      if (m) {
+        args.push("-video_size", `${m.width}x${m.height}`);
+        // Um ou outro, nunca os dois: o modo é comprimido OU cru.
+        if (m.vcodec) args.push("-vcodec", m.vcodec);
+        else if (m.pixelFormat) args.push("-pixel_format", m.pixelFormat);
+      }
+      args.push("-i", `video=${s.camera.id}`);
     } else {
       args.push("-f", "v4l2", "-i", s.camera.id);
     }
