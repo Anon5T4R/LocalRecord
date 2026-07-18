@@ -23,6 +23,7 @@ use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -75,13 +76,17 @@ fn capture_lost(tail: &str) -> bool {
     })
 }
 
-/// O cano do áudio do sistema quebrou no meio? Mesma frase genérica, outra
-/// entrada: o PCM cru é a única entrada `s16le` do grafo.
+/// A linha é o ffmpeg recusando o PCM do cano? O PCM cru é a única entrada
+/// `s16le` do grafo, então a entrada identifica a fonte.
 ///
-/// Vale por si porque o `feed_error` do lado Rust só enxerga o que ACONTECE no
-/// nosso lado do cano; quando quem recusa o dado é o ffmpeg, só o stderr conta.
-fn sys_audio_lost(tail: &str) -> bool {
-    tail.lines().any(|l| l.contains(DEMUX_ERROR) && l.contains("s16le"))
+/// **Só reconhece a linha — não decide nada.** Quem decide é a thread do
+/// stderr, que sabe se o stop já foi pedido: no encerramento normal o cano é
+/// fechado de propósito e o ffmpeg SEMPRE reclama. Medi num take real
+/// (2026-07-18 07:08): a faixa do sistema tinha 40,4 s contra 41,0 s do mic e
+/// silêncio digital limpo — o erro era o fim do cano, não perda no meio.
+/// Tratar essa linha como falha acenderia alarme em toda gravação.
+fn sys_audio_line(line: &str) -> bool {
+    line.contains(DEMUX_ERROR) && line.contains("s16le")
 }
 
 /// Abaixo de qual fração do fps alvo a gravação conta como degradada.
@@ -269,6 +274,10 @@ struct Rec {
     log: PathBuf,
     /// Guardado do start pro stop poder julgar o resultado contra o que foi pedido.
     target_fps: Option<f64>,
+    /// Ligada no `rec_stop` ANTES do `q`: a partir daí, cano fechado é esperado.
+    stopping: Arc<AtomicBool>,
+    /// O ffmpeg recusou o PCM do cano ENQUANTO ainda se gravava.
+    sys_lost: Arc<AtomicBool>,
 }
 
 /// Uma gravação por vez (v0.1). O `Option` é o estado inteiro: `None` = parado.
@@ -440,6 +449,8 @@ fn try_start(
     args: &[String],
     log: &Path,
     target_fps: Option<f64>,
+    stopping: Arc<AtomicBool>,
+    sys_lost: Arc<AtomicBool>,
 ) -> Result<(Child, Arc<Mutex<VecDeque<String>>>), String> {
     let mut child = spawn_ffmpeg(ffmpeg, args)?;
     let stdout = child.stdout.take().ok_or("sem stdout do ffmpeg")?;
@@ -464,6 +475,8 @@ fn try_start(
     let err: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
     let err_c = err.clone();
     let app_err = app.clone();
+    let stopping_c = stopping.clone();
+    let sys_lost_c = sys_lost.clone();
     std::thread::spawn(move || {
         // Re-liga `mut` dentro da thread: a mutabilidade do binding de fora não
         // atravessa a captura por `move` de forma óbvia, e depender disso é
@@ -481,6 +494,16 @@ fn try_start(
             if !ja_avisou && capture_lost(&line) {
                 ja_avisou = true;
                 let _ = app_err.emit("rec-capture-lost", ());
+            }
+            // O cano do áudio do sistema só conta como PERDIDO se reclamar antes
+            // do stop. Depois do stop a reclamação é garantida — o cano é
+            // fechado de propósito — e contá-la acenderia alarme em toda
+            // gravação. Mesma lógica que o pacer já usa pro `feed`.
+            if !sys_lost_c.load(Ordering::SeqCst)
+                && sys_audio_line(&line)
+                && !stopping_c.load(Ordering::SeqCst)
+            {
+                sys_lost_c.store(true, Ordering::SeqCst);
             }
             if let Ok(mut v) = err_c.lock() {
                 push_tail(&mut v, line, ERR_TAIL);
@@ -573,7 +596,12 @@ pub fn rec_start(
     let log = log_path_for(&mkv);
     let _ = std::fs::remove_file(&log);
 
-    let (child, err, used_fallback) = match try_start(&app, &ffmpeg, &opts.args, &log, opts.target_fps) {
+    let stopping = Arc::new(AtomicBool::new(false));
+    let sys_lost = Arc::new(AtomicBool::new(false));
+
+    let (child, err, used_fallback) = match try_start(
+        &app, &ffmpeg, &opts.args, &log, opts.target_fps, stopping.clone(), sys_lost.clone(),
+    ) {
         Ok((c, e)) => (c, e, false),
         Err(first) => {
             // Plano B honesto: só cai no gdigrab se o ddagrab REALMENTE não
@@ -592,7 +620,9 @@ pub fn rec_start(
                 crate::sysaudio::stop_feed(&sys);
                 return Err(format!("{} | e o canal do áudio do sistema não voltou: {}", first, e));
             }
-            match try_start(&app, &ffmpeg, &fb, &log, opts.target_fps) {
+            match try_start(
+                &app, &ffmpeg, &fb, &log, opts.target_fps, stopping.clone(), sys_lost.clone(),
+            ) {
                 Ok((c, e)) => (c, e, true),
                 Err(second) => {
                     crate::sysaudio::stop_feed(&sys);
@@ -610,6 +640,8 @@ pub fn rec_start(
         err,
         log,
         target_fps: opts.target_fps,
+        stopping,
+        sys_lost,
     };
     *state.inner.lock().map_err(|_| "estado corrompido")? = Some(rec);
 
@@ -668,6 +700,9 @@ pub fn rec_stop(
     //  2. o `q` e a espera do trailer.
     //  3. só então lê o erro (que agora só tem falha REAL de meio de gravação) e
     //     desmonta o feed de vez.
+    // Mesma razão do `signal_feed_stop`, e ANTES dele pela mesma ordem: a partir
+    // daqui, cano quebrado é o encerramento acontecendo, não falha.
+    rec.stopping.store(true, Ordering::SeqCst);
     crate::sysaudio::signal_feed_stop(&sys);
     let graceful = graceful_stop(&mut rec.child);
     let sys_audio_error = crate::sysaudio::feed_error(&sys);
@@ -708,7 +743,9 @@ pub fn rec_stop(
     // 2026-07-18 07:0x foi exatamente assim: `feed_error` limpo e o take sem o som
     // do computador.
     let sys_audio_error = sys_audio_error.or_else(|| {
-        sys_audio_lost(&tail).then(|| "o ffmpeg recusou o canal do áudio do sistema".to_string())
+        rec.sys_lost
+            .load(Ordering::SeqCst)
+            .then(|| "o ffmpeg recusou o canal do áudio do sistema".to_string())
     });
 
     // O log fica quando ALGO deu errado; some quando o take saiu limpo. Guardar
@@ -872,12 +909,12 @@ mod tests {
         let so_audio = "[in#3/s16le @ 00000137c5521680] Error during demuxing: Invalid argument";
         assert!(!capture_lost(so_audio));
         // E o inverso: é o cano do áudio, e isso o app precisa saber.
-        assert!(sys_audio_lost(so_audio));
+        assert!(sys_audio_line(so_audio));
 
         // A mesma frase vinda da TELA continua contando como captura perdida.
         let da_tela = "[in#0/lavfi @ 000001c136c74cc0] Error during demuxing: Generic error in an external library";
         assert!(capture_lost(da_tela));
-        assert!(!sys_audio_lost(da_tela));
+        assert!(!sys_audio_line(da_tela));
     }
 
     #[test]
@@ -889,7 +926,26 @@ mod tests {
                     [in#1/dshow @ 000001c1] real-time buffer [Integrated Camera] too full!\n\
                     [in#3/s16le @ 000001c1] Error during demuxing: Invalid argument";
         assert!(capture_lost(real));
-        assert!(sys_audio_lost(real));
+        // A linha do cano esta no bolo, mas `sys_audio_line` e por LINHA — a
+        // thread do stderr e quem a aplica, uma linha por vez.
+        assert!(real.lines().any(sys_audio_line));
+    }
+
+    #[test]
+    fn a_linha_do_cano_sozinha_nao_e_veredito() {
+        // O ponto da correção de 2026-07-18 (segunda rodada). Esta linha sai em
+        // TODA gravação com áudio do sistema, porque o `rec_stop` fecha o cano
+        // de propósito antes do `q` — e o ffmpeg reclama do fechamento.
+        //
+        // Medido no take das 07:08:08: a faixa do sistema tinha 40,4 s contra
+        // 41,0 s do mic, com silêncio digital limpo (−91 dB em 646.485
+        // amostras). Nada foi perdido no meio; o cano só acabou primeiro.
+        //
+        // Por isso a função só RECONHECE a linha. Quem decide é a thread do
+        // stderr, comparando com a flag `stopping`. Se esta função voltar a
+        // decidir sozinha, todo take acende "áudio do sistema perdido".
+        let linha = "[in#3/s16le @ 000002124e586340] Error during demuxing: Invalid argument";
+        assert!(sys_audio_line(linha));
     }
 
     #[test]
@@ -902,7 +958,7 @@ mod tests {
                    [video input] too full or near too full (96% of size: 128000000 \
                    [rtbufsize parameter])! frame dropped!";
         assert!(!capture_lost(buf));
-        assert!(!sys_audio_lost(buf));
+        assert!(!sys_audio_line(buf));
     }
 
     #[test]
