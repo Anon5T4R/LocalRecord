@@ -1,3 +1,534 @@
+/* Superficies suavizadas: o fundo nao pode ser a coisa mais forte da tela.
+   Branco puro tem contraste maximo contra tudo e rouba o foco do accent, entao
+   o --panel virou off-white tingido com o matiz do --bg (nunca #fff) e o --bg
+   desceu ~4 pontos de L*. A escada bg < panel-2 < panel do app foi preservada. */
+:root {
+  --bg: #eaebf0;
+  --panel: #f7f9fe;
+  --panel-2: #eef0f3;
+  --text: #16202e;
+  --muted: #606b7b;
+  --border: #d8dde5;
+  --accent: #8b5cf6;
+  --accent-2: #a78bfa;
+  --accent-ink: #ffffff;
+  --sel-bg: #ede9fe;
+  --danger: #dc2626;
+  --err-bg: #fef2f2;
+  --err-border: #fca5a5;
+  --warn-bg: #fdf4e6;
+  --warn-border: #e6c58a;
+  --shadow: 0 10px 30px rgba(20, 40, 90, 0.12);
+  --radius: 12px;
+}
+
+:root[data-theme="dark"] {
+  --bg: #191d25;
+  --panel: #202733;
+  --panel-2: #262e3c;
+  --text: #e7edf5;
+  --muted: #8695a8;
+  --border: #323c4b;
+  --accent: #a78bfa;
+  --accent-2: #c4b5fd;
+  --accent-ink: #1e1033;
+  --sel-bg: #2a1a45;
+  --danger: #f87171;
+  --err-bg: #2a1414;
+  --err-border: #7f1d1d;
+  --warn-bg: #2a1f12;
+  --warn-border: #7c5017;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+}
+
+/* ---- Temas nomeados (paletas fixas; sobrepõem o accent do app) ---- */
+:root[data-theme="nature"] {
+  --bg: #eef1e9;
+  --panel: #f8faf5;
+  --panel-2: #e4eade;
+  --text: #2e3a2e;
+  --muted: #647064;
+  --border: #dbe3d4;
+  --accent: #7a9e7e;
+  --accent-2: #e8b4c8;
+  --accent-ink: #1e2a1e;
+  --sel-bg: #e6efe1;
+  --danger: #c0492f;
+  --ok: #5a8f5e;
+  --warn-bg: #fdf4e6;
+  --warn-border: #e6c58a;
+  --err-bg: #fbecea;
+  --err-border: #e6a99b;
+  --shadow: 0 10px 30px rgba(60, 80, 50, 0.14);
+  --radius: 12px;
+  --term-bg: #f8faf5;
+}
+:root[data-theme="darkblue"] {
+  --bg: #16202e;
+  --panel: #1d2a3c;
+  --panel-2: #26374e;
+  --text: #e2e8f0;
+  --muted: #8595ad;
+  --border: #2d3f59;
+  --accent: #3b82f6;
+  --accent-2: #60a5fa;
+  --accent-ink: #ffffff;
+  --sel-bg: #1e3a5f;
+  --danger: #f87171;
+  --ok: #4ade80;
+  --warn-bg: #2a1f12;
+  --warn-border: #7c5017;
+  --err-bg: #2a1414;
+  --err-border: #7f1d1d;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  --radius: 12px;
+  --term-bg: #16202e;
+}
+:root[data-theme="calmgreen"] {
+  --bg: #eaf0e9;
+  --panel: #f7faf6;
+  --panel-2: #dfe8dd;
+  --text: #24302a;
+  --muted: #617066;
+  --border: #d5e0d3;
+  --accent: #4f7d5e;
+  --accent-2: #6fa07e;
+  --accent-ink: #ffffff;
+  --sel-bg: #dcebd9;
+  --danger: #c0492f;
+  --ok: #4f7d5e;
+  --warn-bg: #fbf3e3;
+  --warn-border: #e0c184;
+  --err-bg: #fbecea;
+  --err-border: #e6a99b;
+  --shadow: 0 10px 30px rgba(40, 70, 50, 0.14);
+  --radius: 12px;
+  --term-bg: #f7faf6;
+}
+:root[data-theme="pastelpink"] {
+  --bg: #f8ebf0;
+  --panel: #fdf6f9;
+  --panel-2: #f2dde6;
+  --text: #3a2a30;
+  --muted: #796771;
+  --border: #ecd3de;
+  --accent: #e8799f;
+  --accent-2: #f4a9c4;
+  --accent-ink: #3a2028;
+  --sel-bg: #fbe4ee;
+  --danger: #d84a6b;
+  --ok: #4f9d76;
+  --warn-bg: #fdf3e6;
+  --warn-border: #e9c78e;
+  --err-bg: #fdecef;
+  --err-border: #f0a9bc;
+  --shadow: 0 10px 30px rgba(120, 60, 90, 0.14);
+  --radius: 12px;
+  --term-bg: #fdf6f9;
+}
+:root[data-theme="punkprincess"] {
+  --bg: #1c1228;
+  --panel: #251733;
+  --panel-2: #32204a;
+  --text: #f0e6ff;
+  --muted: #9a86b5;
+  --border: #3a2850;
+  --accent: #ff2d95;
+  --accent-2: #2de2ff;
+  --accent-ink: #12061a;
+  --sel-bg: #33143a;
+  --danger: #ff5470;
+  --ok: #43e8a0;
+  --warn-bg: #2a1f12;
+  --warn-border: #7c5017;
+  --err-bg: #2a0f1a;
+  --err-border: #8a2444;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+  --radius: 12px;
+  --term-bg: #1c1228;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  overflow: hidden;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 10px;
+  transition: background 0.12s, border-color 0.12s;
+}
+button:hover:not(:disabled) {
+  background: var(--panel-2);
+}
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+button.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+  font-weight: 600;
+}
+button.primary {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: var(--accent-ink);
+  border: none;
+  font-weight: 600;
+}
+input,
+select {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+select:disabled {
+  opacity: 0.55;
+}
+
+/* ---------- topo ---------- */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.brand {
+  font-weight: 700;
+  font-size: 15px;
+}
+.tagline {
+  font-size: 12.5px;
+}
+.segmented {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.toolbar-fill {
+  flex: 1;
+}
+
+/* ---------- corpo ---------- */
+.grid {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+  align-content: start;
+}
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* Aviso de runtime ausente: faixa no topo, não modal — o app abre e explica. */
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  background: var(--warn-bg);
+  border-bottom: 1px solid var(--warn-border);
+  font-size: 12.5px;
+  flex-shrink: 0;
+}
+
+/* ---------- fontes de captura ---------- */
+.source-row {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  gap: 10px;
+  align-items: center;
+}
+.source-row select {
+  min-width: 0;
+}
+.rec-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  flex-shrink: 0;
+}
+.rec-btn {
+  font-size: 15px;
+  padding: 9px 22px;
+}
+
+/* ---------- modal / toasts / util ---------- */
+.muted {
+  color: var(--muted);
+}
+.small {
+  font-size: 12px;
+}
+.about {
+  font-size: 12.5px;
+  line-height: 1.5;
+  margin-top: 10px;
+}
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 20px 22px;
+  width: min(430px, 92vw);
+  max-height: 85vh;
+  overflow-y: auto;
+}
+.modal h2 {
+  margin: 0 0 14px;
+  font-size: 17px;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+}
+.toasts {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 200;
+}
+.toast {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 9px 16px;
+  cursor: pointer;
+  max-width: 70vw;
+}
+.toast.ok {
+  border-color: var(--accent);
+}
+.toast.error {
+  background: var(--err-bg);
+  border-color: var(--err-border);
+}
+
+/* ---- Onda 2: prévia + barra de gravação ---- */
+
+/* Cada coluna do .grid empilha seus cards. */
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* O palco tem o ASPECTO DA TELA REAL (aspect-ratio vem inline, do JS): é o que
+   faz a prévia não mentir sobre o enquadramento do vídeo. */
+.stage {
+  position: relative;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #000;
+  user-select: none;
+}
+.stage-shot {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+.stage-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+}
+/* A câmera é posicionada em % (left/right/top/bottom vêm inline) — as mesmas
+   proporções que o overlay do ffmpeg usa. */
+.stage-cam {
+  position: absolute;
+  border-radius: 6px;
+  box-shadow: 0 2px 10px rgb(0 0 0 / 45%);
+  cursor: grab;
+  object-fit: cover;
+  background: #111;
+}
+.stage-cam.dragging {
+  cursor: grabbing;
+  outline: 2px solid var(--accent);
+}
+
+/* Linha do slider: 3 colunas (rótulo, controle, valor). */
+.size-row {
+  display: grid;
+  grid-template-columns: 92px 1fr auto;
+  gap: 10px;
+  align-items: center;
+}
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* LED da caneta. A caneta liga por ATALHO GLOBAL, com o foco em outro app —
+   este ponto é o único jeito de o painel dizer "o overlay está com o mouse
+   agora". Apagado = o clique está passando direto (o estado normal). */
+.annot-led {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--border);
+  border: 1px solid var(--border);
+}
+.annot-led.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--sel-bg);
+}
+
+.rec-btn.stop {
+  background: var(--err-border, #ef4444);
+  color: #fff;
+}
+.countdown {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.timer {
+  font-variant-numeric: tabular-nums;
+  font-size: 15px;
+  font-weight: 600;
+}
+/* Bolinha vermelha pulsando: o sinal universal de "está gravando". */
+.rec-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ef4444;
+  animation: rec-pulse 1.4s ease-in-out infinite;
+}
+@keyframes rec-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rec-dot {
+    animation: none;
+  }
+}
+
+/* Medidor de nível (VU). A barra usa var(--accent) porque é a cor de "isto
+   está vivo" no app inteiro; o vermelho fica reservado pro topo da escala, que
+   é aviso de verdade (clipping não se conserta na edição). */
+.meter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.meter {
+  flex: 1;
+  height: 8px;
+  min-width: 60px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.meter-fill {
+  height: 100%;
+  background: var(--accent);
+  /* Curto de propósito: o medidor tem que parecer o som ENTRANDO agora, não uma
+     animação bonita chegando atrasada. */
+  transition: width 60ms linear;
+}
+.meter-fill.hot {
+  background: var(--danger);
+}
+.meter-db {
+  min-width: 44px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.meter-msg {
+  margin: 2px 0 0;
+}
 
 /* O motivo de a prévia não ter vindo, embaixo do aviso genérico. Pequeno e
    discreto: quem está gravando não precisa disso, quem está diagnosticando
