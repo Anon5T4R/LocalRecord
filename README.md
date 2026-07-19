@@ -24,15 +24,23 @@ câmera no canto e **anote AO VIVO** por cima. Sem live, sem nuvem, sem conta.
   app diz o motivo e grava sem o áudio do sistema — nunca grava mudo fingindo.
 - **Linux:** pendente (o caminho é o monitor do PulseAudio/pipewire).
 
-**Em construção**
-- **Onda 2:** motor de gravação — start/stop **gracioso** (o ffmpeg recebe `q`
-  no stdin, nunca `kill`, senão o arquivo fica sem índice), gravação em **MKV**
-  (recuperável) com **remux pra MP4** no fim (`-c copy`, sem recodificar),
-  progresso ao vivo e preview WYSIWYG
-- **Onda 3 (o pilar):** anotação **ao vivo** — janela transparente always-on-top
-  sobre a tela, com caneta/texto/borracha. Como a captura pega o que está *na
-  tela*, a anotação entra no vídeo de graça **e a plateia presencial vê junto**
-  (trade-off aceito: fica queimada no vídeo)
+**Onda 2 — motor de gravação (feito, v0.3+)**
+- Start/stop **gracioso** (o ffmpeg recebe `q` no stdin, nunca `kill`, senão o
+  arquivo fica sem índice), gravação em **MKV** (recuperável) com **remux pra
+  MP4** no fim (`-c copy`, sem recodificar), progresso ao vivo e escolha de
+  encoder provada por teste real (não por lista `-encoders`).
+
+**Onda 3 — anotação ao vivo, o pilar (feito, v0.4+)**
+- Janela transparente always-on-top sobre a tela, com caneta/texto/borracha e
+  atalhos globais (Ctrl+Shift+D caneta, Ctrl+Shift+X limpa). Como a captura
+  pega o que está *na tela*, a anotação entra no vídeo de graça **e a plateia
+  presencial vê junto** (trade-off aceito: fica queimada no vídeo).
+
+**Câmera no canto (feito, v0.7)**
+- A câmera é desenhada **na janela de anotação** (não como segunda captura do
+  ffmpeg): duas capturas ao vivo no mesmo processo se estrangulavam (medido:
+  47–116/300 frames). O ddagrab captura a tela com a câmera já composta —
+  30 fps com e sem câmera, confirmado em máquina real.
 
 ## Stack
 

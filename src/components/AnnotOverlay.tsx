@@ -268,7 +268,13 @@ export default function AnnotOverlay() {
       }
       return;
     }
-    (e.target as Element).setPointerCapture?.(e.pointerId);
+    // O `?.` não basta: com pointer não-ativo (evento sintético, caneta em
+    // transição) o setPointerCapture LANÇA NotFoundError e mataria o gesto.
+    try {
+      (e.target as Element).setPointerCapture?.(e.pointerId);
+    } catch {
+      /* sem captura: o traço segue, só perde o "seguir fora da janela" */
+    }
     if (tool === "eraser") {
       setItems((cur) => eraseAt(cur, p, ERASER_R));
       return;
@@ -321,7 +327,13 @@ export default function AnnotOverlay() {
   // o usuário precisa poder tirá-la da frente do que está explicando.
   const barDown = (e: React.PointerEvent) => {
     drag.current = { dx: e.clientX - bar.x, dy: e.clientY - bar.y };
-    (e.target as Element).setPointerCapture?.(e.pointerId);
+    // Blindada: NotFoundError com pointer não-ativo mataria o arrasto (o `?.`
+    // só cobre método ausente, não a exceção).
+    try {
+      (e.target as Element).setPointerCapture?.(e.pointerId);
+    } catch {
+      /* segue sem captura */
+    }
   };
   const barMove = (e: React.PointerEvent) => {
     const d = drag.current;
