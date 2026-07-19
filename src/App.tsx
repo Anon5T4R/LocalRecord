@@ -63,6 +63,10 @@ interface RecordDone {
   remuxed: boolean;
   /** O áudio do sistema caiu no meio? Vem o motivo (ver record.rs). */
   sysAudioError: string | null;
+  /** A faixa do sistema saiu MUDA do começo ao fim: a placa não entregou um
+   *  pacote sequer (endpoint que não estava tocando, antivírus). Sem erro de
+   *  API nenhum — por isso é um veredito próprio, não um sysAudioError. */
+  sysAudioSilent: boolean;
   /** A captura de TELA morreu no meio: o áudio continua bom e o vídeo congela. */
   captureLost: boolean;
   /** Log do ffmpeg, preservado quando algo deu errado. `null` = take limpo. */
@@ -166,6 +170,7 @@ export default function App() {
    *  recusando). Preenchido = o controle fica desligado e a tela diz o motivo. */
   const [sysErr, setSysErr] = useState<string | null>(null);
   const [tracks, setTracks] = useState<AudioTracks>(initial.tracks);
+  const [micFilter, setMicFilter] = useState(initial.micFilter);
   const [levels, setLevels] = useState({ mic: 0, system: 0 });
   const [micMeterErr, setMicMeterErr] = useState<string | null>(null);
   const [sysMeterErr, setSysMeterErr] = useState<string | null>(null);
@@ -200,9 +205,11 @@ export default function App() {
       setScreen((prev) => pickDefault(list.screens, prev, PRIMARY_SCREEN));
       setCamera((prev) => pickDefault(list.cameras, prev));
       setMic((prev) => pickDefault(list.microphones, prev));
-      // A saída PADRÃO vem em primeiro na lista (contrato do sysaudio) — é o
-      // que o usuário quer em quase todo caso, então é o default aqui.
-      setOutput((prev) => pickDefault(list.outputs, prev, list.outputs[0]?.id ?? ""));
+      // A saída NÃO cai em `outputs[0]`: "" = seguir a padrão do Windows, que o
+      // Rust resolve NA HORA de capturar. Fixar a padrão do momento da lista
+      // era o bug dos takes mudos de 2026-07-19 — o fone BT conectava depois,
+      // o som ia pra lá e o loopback ficava num endpoint parado, sem erro.
+      setOutput((prev) => pickDefault(list.outputs, prev));
     } catch (e) {
       pushToast("error", t("sources.loadFailed", { error: String(e) }));
     } finally {
@@ -228,6 +235,7 @@ export default function App() {
       setMic(setup.mic);
       setOutput(setup.output);
       setSysOn(setup.sysOn);
+      setMicFilter(setup.micFilter);
       setTracks(setup.tracks);
       setCorner(setup.corner);
       setSizePct(setup.sizePct);
@@ -273,6 +281,7 @@ export default function App() {
       mic,
       output,
       sysOn,
+      micFilter,
       tracks,
       corner,
       sizePct,
@@ -282,7 +291,7 @@ export default function App() {
       // estará na lista pra consultar).
       labels: labelsFor(devices, [screen, camera, mic, output]),
     });
-  }, [screen, camera, mic, output, sysOn, tracks, corner, sizePct, fps, devices]);
+  }, [screen, camera, mic, output, sysOn, micFilter, tracks, corner, sizePct, fps, devices]);
 
   // A sonda decide se o áudio do sistema é OFERECÍVEL nesta máquina. Ela não
   // captura nada — só pergunta ao Windows se existe saída de áudio e qual é.
@@ -444,6 +453,7 @@ export default function App() {
         micAudio,
         sysAudio,
         audioTracks: tracks,
+        micFilter,
         encoder: encoder || "libx264",
         outPath: mkvPath,
       };
@@ -483,7 +493,7 @@ export default function App() {
       setPhase("idle");
       pushToast("error", t("rec.failed", { error: String(e) }));
     }
-  }, [camera, corner, encoder, fps, mic, outDir, output, pattern, pushToast, sizePct, sysErr, sysOn, tracks]);
+  }, [camera, corner, encoder, fps, mic, micFilter, outDir, output, pattern, pushToast, sizePct, sysErr, sysOn, tracks]);
 
   // Contagem regressiva: o usuário precisa de tempo pra sair do LocalRecord e
   // ir pra janela que ele vai demonstrar.
@@ -531,6 +541,13 @@ export default function App() {
       // hora de editar. Silêncio inexplicado é o pior jeito de descobrir.
       if (done.sysAudioError) {
         pushToast("info", t("rec.sysAudioLost", { error: done.sysAudioError }));
+      }
+      // Faixa do sistema MUDA do começo ao fim, sem erro de API nenhum: a placa
+      // não entregou um pacote. É o take dos testes de 2026-07-19 — descobrir
+      // aqui, com a causa provável dita, em vez de no play. Só quando não houve
+      // erro reportado (o erro já explica o silêncio sozinho).
+      if (done.sysAudioSilent && !done.sysAudioError) {
+        pushToast("info", t("rec.sysAudioSilent"));
       }
       // A captura de tela morreu no meio. Isto vira ERRO, não aviso: o take
       // continua existindo e com áudio bom, mas o vídeo congelou — e descobrir
@@ -625,13 +642,30 @@ export default function App() {
                   disabled={busy}
                 />
                 {mic && (
-                  <div className="source-row">
-                    <span />
-                    <AudioMeter
-                      peak={levels.mic}
-                      error={micMeterErr ? t("audio.meterFailed", { error: micMeterErr }) : null}
-                    />
-                  </div>
+                  <>
+                    <div className="source-row">
+                      <span />
+                      <AudioMeter
+                        peak={levels.mic}
+                        error={micMeterErr ? t("audio.meterFailed", { error: micMeterErr }) : null}
+                      />
+                    </div>
+                    {/* Filtro de ruído SÓ do microfone (highpass+afftdn no
+                        grafo — ver args.ts). O áudio do sistema nunca passa
+                        por ele: filtrar a música que o PC toca seria defeito. */}
+                    <div className="source-row">
+                      <span />
+                      <label className="check" title={t("audio.micFilterHint")}>
+                        <input
+                          type="checkbox"
+                          checked={micFilter}
+                          disabled={busy}
+                          onChange={(e) => setMicFilter(e.target.checked)}
+                        />
+                        <span>{t("audio.micFilter")}</span>
+                      </label>
+                    </div>
+                  </>
                 )}
 
                 {/* Áudio do sistema: o que o computador está TOCANDO, capturado
@@ -663,11 +697,16 @@ export default function App() {
                 ) : (
                   sysOn && (
                     <>
+                      {/* A opção vazia = "a padrão do Windows", resolvida na
+                          hora de gravar. É o default: fixar um device aqui era
+                          o bug dos takes mudos (o som muda de saída — fone BT
+                          conecta — e o loopback fica no endpoint parado). */}
                       <SourceSelect
                         label={t("sources.output")}
                         devices={devices.outputs}
                         value={output}
                         onChange={setOutput}
+                        emptyLabel={t("sources.outputDefault")}
                         disabled={busy}
                       />
                       <div className="source-row">

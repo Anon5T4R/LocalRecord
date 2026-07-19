@@ -251,6 +251,12 @@ pub struct RecordDone {
     /// usuário PRECISA saber que aquele trecho é silêncio de verdade — descobrir
     /// no play seria a pior hora possível.
     pub sys_audio_error: Option<String>,
+    /// O áudio do sistema gravou a gravação INTEIRA sem receber um pacote real
+    /// da placa — o take tem a faixa, mas ela é silêncio digital do começo ao
+    /// fim. Não vem com erro nenhum (o WASAPI não considera isso erro), e é a
+    /// assinatura de capturar o endpoint que não está tocando: foi o caso dos 3
+    /// takes mudos de 2026-07-19 (fone BT tocando, loopback em outro lugar).
+    pub sys_audio_silent: bool,
     /// A captura de TELA morreu no meio da gravação (o áudio segue bom, o vídeo
     /// congela). O usuário precisa saber AGORA — descobrir no play, depois de
     /// gravar 2 minutos, é a pior hora possível.
@@ -745,6 +751,8 @@ pub fn rec_stop(
     crate::sysaudio::signal_feed_stop(&mic.0);
     let graceful = graceful_stop(&mut rec.child);
     let sys_audio_error = crate::sysaudio::feed_error(&sys);
+    // ANTES do stop_feed, que desmonta o feed e levaria a contabilidade junto.
+    let sys_audio_silent = crate::sysaudio::feed_starved(&sys);
     crate::sysaudio::stop_feed(&sys);
     crate::sysaudio::stop_feed(&mic.0);
 
@@ -831,6 +839,7 @@ pub fn rec_stop(
             graceful,
             remuxed: true,
             sys_audio_error,
+            sys_audio_silent,
             capture_lost: lost,
             log_path,
             take_degraded: degraded,
@@ -845,6 +854,7 @@ pub fn rec_stop(
             graceful,
             remuxed: false,
             sys_audio_error,
+            sys_audio_silent,
             capture_lost: lost,
             log_path,
             take_degraded: degraded,

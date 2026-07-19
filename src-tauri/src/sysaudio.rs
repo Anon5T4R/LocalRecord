@@ -176,6 +176,25 @@ pub fn plan_chunk(due: u64, written: u64, queued: usize, max_backlog: usize) -> 
     Chunk { take, pad: need - take, drop_old }
 }
 
+/// A gravação terminou sem que a placa entregasse UMA amostra com som?
+///
+/// É o veredito que faltava nos 3 takes mudos de 2026-07-19: o loopback de um
+/// endpoint que não está tocando o som do usuário grava silêncio sem NENHUM
+/// erro de API (o pacer completa com zeros como manda o relógio), e o take sai
+/// mudo com todo mundo dizendo Ok. Capturar o endpoint ERRADO (o som sai no
+/// fone BT, a captura ficou nos alto-falantes) tem exatamente essa cara —
+/// medido: 0 amostras não-zero em 6s, `feed.error()` limpo.
+///
+/// `heard` = amostras que chegaram COM som (bloco não-SILENT e pico > 0 — ver
+/// `drain_block`; pacote SILENT não conta, porque endpoint parado com sessão
+/// aberta entrega SILENT o tempo todo e mascararia o veredito, medido também).
+/// `written` = tudo que foi pro cano. Só se afirma algo com ≥5s escritos:
+/// menos que isso é take de teste e não dá pra acusar nada.
+pub fn capture_starved(heard: u64, written: u64, rate: u32, channels: u16) -> bool {
+    let min = (rate as u64) * (channels as u64) * 5;
+    written >= min && heard == 0
+}
+
 /// f32 (-1..1) → i16. O clamp existe porque o mix do Windows PODE passar de 1.0
 /// (soma de apps em float); sem ele, o `as i16` daria a volta e um pico viraria
 /// estalo invertido no take.
@@ -252,6 +271,9 @@ impl SysAudioFeed {
     pub fn stop(&self) {}
     pub fn error(&self) -> Option<String> {
         None
+    }
+    pub fn starved(&self) -> bool {
+        false
     }
 }
 
@@ -371,6 +393,18 @@ pub fn feed_error(state: &SysAudioState) -> Option<String> {
 
 pub fn feed_running(state: &SysAudioState) -> bool {
     state.inner.lock().map(|g| g.is_some()).unwrap_or(false)
+}
+
+/// A captura passou a gravação INTEIRA sem um pacote real da placa? (ver
+/// `capture_starved`). Lido no `rec_stop` ANTES do `stop_feed` — depois dele o
+/// feed já não existe e a resposta seria um falso "tudo bem".
+pub fn feed_starved(state: &SysAudioState) -> bool {
+    state
+        .inner
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|l| l.feed.starved()))
+        .unwrap_or(false)
 }
 
 /// Refaz o canal pra 2ª tentativa da gravação (o fallback ddagrab→gdigrab).
@@ -558,6 +592,28 @@ mod tests {
         // Nome curto demais não casa por prefixo (senão "Mic" pegaria qualquer um).
         assert!(!name_matches("Mic", "Microfone (Realtek(R) Audio)"));
         assert!(!name_matches("", "Qualquer coisa"));
+    }
+
+    #[test]
+    fn take_inteiro_sem_um_pacote_real_e_fome() {
+        // O caso dos takes mudos: 40s escritos (48k estéreo), ZERO reais.
+        assert!(capture_starved(0, 40 * 96_000, 48_000, 2));
+        // UM pacote real que seja já muda o veredito: a placa FALOU — o
+        // silêncio do resto é silêncio de verdade, não endpoint errado.
+        assert!(!capture_starved(480, 40 * 96_000, 48_000, 2));
+    }
+
+    #[test]
+    fn fome_so_se_afirma_com_take_de_verdade() {
+        // 4,9s de 48k estéreo: abaixo do piso de 5s, nada se afirma — take de
+        // teste curto sem som tocando não pode acender aviso.
+        assert!(!capture_starved(0, 470_400, 48_000, 2));
+        // No piso exato, afirma (o formato manda no piso: 44,1k mono é outro nº).
+        assert!(capture_starved(0, 480_000, 48_000, 2));
+        assert!(capture_starved(0, 5 * 44_100, 44_100, 1));
+        assert!(!capture_starved(0, 5 * 44_100 - 1, 44_100, 1));
+        // Gravação que nem escreveu (ffmpeg nunca abriu o cano): silêncio.
+        assert!(!capture_starved(0, 0, 48_000, 2));
     }
 
     #[test]

@@ -27,6 +27,7 @@ const SAVED: Setup = {
   mic: "Mic USB",
   output: "Fone BT",
   sysOn: true,
+  micFilter: true,
   tracks: "separate",
   corner: "tl",
   sizePct: 33,
@@ -47,6 +48,7 @@ describe("reconcileSetup — caso feliz", () => {
     expect(setup.mic).toBe("Mic USB");
     expect(setup.output).toBe("Fone BT");
     expect(setup.sysOn).toBe(true);
+    expect(setup.micFilter).toBe(true);
     expect(setup.tracks).toBe("separate");
     expect(setup.corner).toBe("tl");
     expect(setup.sizePct).toBe(33);
@@ -79,10 +81,14 @@ describe("reconcileSetup — device que sumiu (o bug que a tarefa mira)", () => 
     expect(dropped).toEqual([{ kind: "mic", label: "Mic USB" }]);
   });
 
-  it("saída que sumiu cai na saída PADRÃO (a primeira) e reporta — porque sysOn", () => {
+  it("saída que sumiu cai em '' (SEGUIR a padrão do Windows) e reporta — porque sysOn", () => {
+    // O default deixou de ser `outputs[0]` de propósito: fixar a padrão do
+    // momento da lista era o bug dos takes mudos de 2026-07-19 (o som muda de
+    // saída depois — fone BT conecta — e o loopback fica no endpoint parado,
+    // gravando silêncio sem erro). "" = o Rust resolve a padrão AO GRAVAR.
     const list: DeviceList = { ...FULL, outputs: [dev("Alto-falantes")] };
     const { setup, dropped } = reconcileSetup(SAVED, list);
-    expect(setup.output).toBe("Alto-falantes");
+    expect(setup.output).toBe("");
     expect(dropped).toEqual([{ kind: "output", label: "Fone BT" }]);
   });
 
@@ -91,7 +97,7 @@ describe("reconcileSetup — device que sumiu (o bug que a tarefa mira)", () => 
     const saved: Setup = { ...SAVED, sysOn: false };
     const list: DeviceList = { ...FULL, outputs: [dev("Alto-falantes")] };
     const { setup, dropped } = reconcileSetup(saved, list);
-    expect(setup.output).toBe("Alto-falantes"); // ainda cai no default, sem device fantasma
+    expect(setup.output).toBe(""); // ainda cai no default, sem device fantasma
     expect(dropped).toEqual([]);
   });
 
@@ -105,7 +111,7 @@ describe("reconcileSetup — device que sumiu (o bug que a tarefa mira)", () => 
     const { setup, dropped } = reconcileSetup(SAVED, list);
     expect(setup.camera).toBe("");
     expect(setup.mic).toBe("");
-    expect(setup.output).toBe("Alto-falantes");
+    expect(setup.output).toBe("");
     expect(dropped.map((d) => d.kind).sort()).toEqual(["camera", "mic", "output"]);
   });
 
@@ -158,6 +164,26 @@ describe("labelsFor", () => {
   it("colhe o rótulo só dos ids escolhidos, ignorando vazios e desconhecidos", () => {
     const map = labelsFor(FULL, ["Logitech C920", "", "Mic USB", "id-que-nao-existe"]);
     expect(map).toEqual({ "Logitech C920": "Logitech C920", "Mic USB": "Mic USB" });
+  });
+});
+
+describe("saída padrão (o conserto dos takes mudos)", () => {
+  it("escolha explícita do usuário sobrevive; sem escolha, '' (seguir o Windows)", () => {
+    // Explícita: "Fone BT" existe → fica.
+    expect(reconcileSetup(SAVED, FULL).setup.output).toBe("Fone BT");
+    // Primeira execução: NÃO cai em outputs[0] — "" deixa o Rust resolver a
+    // padrão na hora de capturar, que é onde o som realmente está.
+    expect(reconcileSetup(null, FULL).setup.output).toBe("");
+  });
+});
+
+describe("filtro de ruído do microfone", () => {
+  it("restaura o que foi salvo e o default é DESLIGADO", () => {
+    expect(reconcileSetup(SAVED, FULL).setup.micFilter).toBe(true);
+    expect(reconcileSetup(null, FULL).setup.micFilter).toBe(false);
+    // Lixo no storage não liga filtro por acidente (só `true` literal liga).
+    const lixo = { ...SAVED, micFilter: "yes" } as unknown as Setup;
+    expect(reconcileSetup(lixo, FULL).setup.micFilter).toBe(false);
   });
 });
 

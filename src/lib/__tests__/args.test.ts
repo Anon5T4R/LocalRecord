@@ -190,6 +190,73 @@ describe("buildRecordArgs", () => {
     expect(line).toContain("[1:a][2:a]amix=");
   });
 
+  it("filtro de ruído: mic sozinho passa pelo grafo e sai pelo rótulo [mf]", () => {
+    // Sem filtro o mic é `-map 1:a` direto; com filtro ele PRECISA virar label
+    // de filter_complex — mapear 1:a aqui gravaria o áudio CRU e o checkbox
+    // viraria mentira silenciosa.
+    const args = buildRecordArgs({ ...base, mic: "Mic", micAudio: MIC, micFilter: true });
+    const line = args.join(" ");
+    expect(line).toContain("[1:a]highpass=f=80,afftdn=nr=12:nf=-28[mf]");
+    expect(line).toContain("-map [mf]");
+    expect(line).not.toContain("-map 1:a");
+  });
+
+  it("filtro de ruído no mixed: entra ANTES do amix, e o sistema não passa por ele", () => {
+    // Filtrar a mixagem pronta atacaria também a música que o PC toca — o
+    // filtro é da voz, então age na perna do mic e o amix lê [mf].
+    const line = buildRecordArgs({
+      ...base,
+      mic: "Mic",
+      micAudio: MIC,
+      sysAudio: SYS,
+      micFilter: true,
+    }).join(" ");
+    expect(line).toContain(
+      "[1:a]highpass=f=80,afftdn=nr=12:nf=-28[mf];[mf][2:a]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[a]",
+    );
+    expect(line).toContain("-map [a]");
+  });
+
+  it("filtro de ruído no separate: só a trilha do mic é filtrada, nomes intactos", () => {
+    const line = buildRecordArgs({
+      ...base,
+      mic: "Mic",
+      micAudio: MIC,
+      sysAudio: SYS,
+      audioTracks: "separate",
+      micFilter: true,
+    }).join(" ");
+    expect(line).toContain("[1:a]highpass=f=80,afftdn=nr=12:nf=-28[mf]");
+    // a:0 continua sendo o mic (agora via label) e a:1 o sistema, cru.
+    expect(line).toContain("-map [mf] -map 2:a");
+    expect(line).toContain("-metadata:s:a:0 title=Microfone");
+    expect(line).toContain("-metadata:s:a:1 title=Áudio do sistema");
+    expect(line).not.toContain("amix");
+  });
+
+  it("filtro desligado (o default): NENHUM highpass/afftdn na linha", () => {
+    // O default é gravar a voz como ela veio — filtro é escolha explícita.
+    for (const tracks of ["mixed", "separate"] as const) {
+      const line = buildRecordArgs({
+        ...base,
+        mic: "Mic",
+        micAudio: MIC,
+        sysAudio: SYS,
+        audioTracks: tracks,
+      }).join(" ");
+      expect(line).not.toContain("afftdn");
+      expect(line).not.toContain("highpass");
+    }
+  });
+
+  it("filtro de ruído NUNCA toca o áudio do sistema sozinho", () => {
+    // Sem mic não há o que filtrar — micFilter ligado não pode vazar pro
+    // sistema (filtrar a música do PC seria defeito, não feature).
+    const line = buildRecordArgs({ ...base, sysAudio: SYS, micFilter: true }).join(" ");
+    expect(line).not.toContain("afftdn");
+    expect(line).toContain("-map 1:a");
+  });
+
   it("faixa separada só existe com as duas fontes (uma fonte é uma faixa)", () => {
     // "Separado" com uma fonte só não quer dizer nada — e não pode virar um
     // -map duplicado da mesma entrada.

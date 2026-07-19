@@ -24,7 +24,7 @@
 //!  3. **medidor** — manda o nível pro sink ~15×/s.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -214,6 +214,14 @@ struct Shared {
     cap: AtomicUsize,
     /// A placa reclamou no meio do caminho? A UI merece saber.
     err: Mutex<Option<String>>,
+    /// Contabilidade pro veredito de MUDEZ no stop (`capture_starved`): amostras
+    /// que chegaram da placa COM SOM (bloco não marcado SILENT e com pico > 0)
+    /// vs. total escrito no cano. NÃO é "pacotes recebidos": um endpoint parado
+    /// mas com sessão aberta entrega pacotes SILENT o tempo todo (medido no
+    /// Realtek desta máquina — 6s de pacotes, zero som) e contá-los mascararia
+    /// exatamente o take mudo que este veredito existe pra acusar.
+    heard: AtomicU64,
+    total_out: AtomicU64,
 }
 
 impl Shared {
@@ -224,6 +232,8 @@ impl Shared {
             stop: AtomicBool::new(false),
             cap: AtomicUsize::new(usize::MAX),
             err: Mutex::new(None),
+            heard: AtomicU64::new(0),
+            total_out: AtomicU64::new(0),
         }
     }
     fn fail(&self, msg: String) {
@@ -272,6 +282,12 @@ fn drain_block(shared: &Shared, samples: &[f32], silent: bool) {
     }
     drop(guard);
     shared.peak.fetch_max(peak.to_bits(), Ordering::Relaxed);
+    // SOM de verdade só quando o bloco não veio marcado SILENT e tem amplitude:
+    // é esta conta que separa "gravei o que tocava" de "gravei um endpoint mudo"
+    // no veredito do stop (`capture_starved`).
+    if !silent && peak > 0.0 {
+        shared.heard.fetch_add(samples.len() as u64, Ordering::Relaxed);
+    }
 }
 
 /// Sobe a captura numa thread própria e devolve o formato REAL do dispositivo.
@@ -343,6 +359,8 @@ pub struct SysAudioFeed {
     shared: Arc<Shared>,
     connected: Arc<AtomicBool>,
     pipe_name: String,
+    /// Guardado pro veredito de fome: o piso de 5s depende do formato real.
+    fmt: AudioFormat,
 }
 
 impl SysAudioFeed {
@@ -430,7 +448,7 @@ impl SysAudioFeed {
             channels: fmt.channels,
             pipe_path: pipe_name.clone(),
         };
-        Ok((Self { shared, connected, pipe_name }, info))
+        Ok((Self { shared, connected, pipe_name, fmt }, info))
     }
 
     /// Erro que apareceu no caminho (placa reclamou, canal caiu). A gravação
@@ -438,6 +456,20 @@ impl SysAudioFeed {
     /// trecho de áudio do sistema é silêncio de verdade.
     pub fn error(&self) -> Option<String> {
         self.shared.err.lock().ok().and_then(|e| e.clone())
+    }
+
+    /// A gravação inteira passou sem UMA amostra COM SOM vinda da placa? É a
+    /// assinatura de capturar o endpoint que não está tocando (ou de um
+    /// antivírus mudo no meio do caminho): tudo Ok, tudo silêncio. NÃO conta
+    /// pacote SILENT como som — endpoint parado com sessão aberta entrega
+    /// pacotes SILENT o tempo todo. Ver `capture_starved`.
+    pub fn starved(&self) -> bool {
+        super::capture_starved(
+            self.shared.heard.load(Ordering::Relaxed),
+            self.shared.total_out.load(Ordering::Relaxed),
+            self.fmt.sample_rate,
+            self.fmt.channels,
+        )
     }
 
     pub fn stop(&self) {
@@ -505,7 +537,7 @@ impl SysAudioFeed {
             channels: fmt.channels,
             pipe_path: pipe_name.clone(),
         };
-        Ok((Self { shared, connected, pipe_name }, info))
+        Ok((Self { shared, connected, pipe_name, fmt }, info))
     }
 }
 
@@ -550,6 +582,8 @@ fn pacer(server: pipe::PipeServer, shared: Arc<Shared>, fmt: AudioFormat, connec
             buf.extend_from_slice(&0i16.to_le_bytes());
         }
         written += (plan.take + plan.pad) as u64;
+        // Contabilidade do veredito de mudez (lida no stop, ver `starved`).
+        shared.total_out.store(written, Ordering::Relaxed);
         if buf.is_empty() {
             continue;
         }

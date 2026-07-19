@@ -21,10 +21,19 @@ export interface Setup {
   screen: string;
   camera: string;
   mic: string;
+  /** Saída do áudio do sistema. `""` = SEGUIR A PADRÃO do Windows, resolvida na
+   *  hora de gravar — e é o default. Fixar um nome aqui era o bug dos takes
+   *  mudos de 2026-07-19: o app fixava a saída que era padrão QUANDO ELE ABRIU;
+   *  o fone BT conectava depois, o Windows movia o som pra lá, e o loopback
+   *  ficava escutando um endpoint parado — silêncio digital, sem erro nenhum.
+   *  Nome preenchido = o usuário ESCOLHEU aquele device, e aí respeita-se. */
   output: string;
   /** Flag do áudio do sistema (o checkbox da v0.2). A saída (`output`) só
    *  importa quando isto é `true`. */
   sysOn: boolean;
+  /** Filtro de ruído do MICROFONE (passa-alta + afftdn no grafo do ffmpeg).
+   *  Desligado por padrão — filtro custa um pouco de voz e é escolha explícita. */
+  micFilter: boolean;
   /** Layout — sem risco de "sumir", restaurados direto (com clamp/validação). */
   tracks: AudioTracks;
   corner: Corner;
@@ -58,6 +67,7 @@ export const DEFAULT_SETUP: Setup = {
   mic: "",
   output: "",
   sysOn: false,
+  micFilter: false,
   tracks: "mixed",
   corner: "br",
   sizePct: 25,
@@ -157,9 +167,13 @@ export function reconcileSetup(saved: Partial<Setup> | null, list: DeviceList): 
   const mic = pickDefault(list.microphones, savedMic);
   if (savedMic && mic !== savedMic) dropped.push({ kind: "mic", label: nameOf(savedMic) });
 
-  // Saída: default é a primeira da lista (contrato do sysaudio).
+  // Saída: o default é "" = SEGUIR A PADRÃO do Windows (resolvida pelo Rust na
+  // hora de capturar). Era `outputs[0]` — a padrão do MOMENTO DO BOOT — e isso
+  // fixava o endpoint: fone BT conectado depois movia o som pra outro lugar e o
+  // loopback gravava silêncio do endpoint parado, sem erro (takes de
+  // 2026-07-19). Só um nome que o USUÁRIO escolheu sobrevive aqui.
   const savedOutput = s.output ?? "";
-  const output = pickDefault(list.outputs, savedOutput, list.outputs[0]?.id ?? "");
+  const output = pickDefault(list.outputs, savedOutput);
   const sysOn = s.sysOn === true;
   // Só avisa se o áudio do sistema estava ligado — senão a saída nem seria usada.
   if (sysOn && savedOutput && output !== savedOutput) {
@@ -175,8 +189,10 @@ export function reconcileSetup(saved: Partial<Setup> | null, list: DeviceList): 
     ? (s.fps as TargetFps)
     : DEFAULT_SETUP.fps;
 
+  const micFilter = s.micFilter === true;
+
   return {
-    setup: { screen, camera, mic, output, sysOn, tracks, corner, sizePct, fps, labels },
+    setup: { screen, camera, mic, output, sysOn, micFilter, tracks, corner, sizePct, fps, labels },
     dropped,
   };
 }

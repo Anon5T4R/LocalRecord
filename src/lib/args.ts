@@ -54,6 +54,9 @@ export interface RecordSpec {
   /** Áudio do sistema, ou null pra não gravar o que o computador toca. */
   sysAudio: SysAudioSpec | null;
   audioTracks: AudioTracks;
+  /** Filtro de ruído do MICROFONE (passa-alta + afftdn). Opcional e desligado
+   *  por padrão: filtro custa um pouco de voz, e isso é escolha do usuário. */
+  micFilter?: boolean;
   encoder: Encoder;
   /** Arquivo de saída — sempre .mkv (recuperável se faltar luz). */
   outPath: string;
@@ -65,6 +68,13 @@ export interface RecordSpec {
  *  viraria biblioteca com dois nomes pra mesma coisa. */
 const TRACK_MIC = "Microfone";
 const TRACK_SYS = "Áudio do sistema";
+
+/** Cadeia da opção "Filtrar ruído do microfone": passa-alta em 80 Hz tira o
+ *  rumble de mesa/manuseio abaixo da voz, e o `afftdn` reduz chiado CONSTANTE
+ *  (ventoinha, ar-condicionado). Valores comedidos de propósito — nr alto come
+ *  sibilância da fala. SÓ no microfone: filtrar o áudio do sistema mexeria na
+ *  música/vídeo que o usuário está gravando de propósito. */
+const MIC_FILTER = "highpass=f=80,afftdn=nr=12:nf=-28";
 
 /** Margem da câmera até a borda, em pixels do vídeo final. */
 const MARGIN = 16;
@@ -142,31 +152,43 @@ export function buildAudio(
   micIdx: number,
   sysIdx: number,
   tracks: AudioTracks,
+  micFilter = false,
 ): { chain: string; maps: string[] } {
   const hasMic = micIdx >= 0;
   const hasSys = sysIdx >= 0;
   if (!hasMic && !hasSys) return { chain: "", maps: [] };
+  // Com filtro, a saída do mic deixa de ser a entrada crua `N:a` e vira o
+  // rótulo `[mf]` do grafo — o resto da cadeia lê DALI, seja o amix, seja o
+  // `-map` direto. Sem filtro, nada muda: filtro à toa é lugar pra dar errado.
+  const mf = hasMic && micFilter ? `[${micIdx}:a]${MIC_FILTER}[mf]` : "";
+  const micOut = mf ? "[mf]" : `${micIdx}:a`;
   if (hasMic && hasSys) {
     if (tracks === "separate") {
       // Faixas separadas: o editor recebe mic e sistema em trilhas próprias e
       // decide o balanço lá (é o "modo produção" do plano). Os títulos entram
-      // pra ninguém precisar adivinhar qual é qual no LocalVideo.
+      // pra ninguém precisar adivinhar qual é qual no LocalVideo. O filtro (se
+      // ligado) age só na trilha do mic — a do sistema segue como veio.
       return {
-        chain: "",
+        chain: mf,
         maps: [
-          "-map", `${micIdx}:a`,
+          "-map", micOut,
           "-map", `${sysIdx}:a`,
           "-metadata:s:a:0", `title=${TRACK_MIC}`,
           "-metadata:s:a:1", `title=${TRACK_SYS}`,
         ],
       };
     }
+    // No mixed o filtro entra ANTES do amix: filtrar a mixagem pronta atacaria
+    // também o áudio do sistema, que é justamente o que não se filtra.
+    const amixIn = mf ? "[mf]" : `[${micIdx}:a]`;
+    const amix = `${amixIn}[${sysIdx}:a]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[a]`;
     return {
-      chain: `[${micIdx}:a][${sysIdx}:a]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[a]`,
+      chain: mf ? `${mf};${amix}` : amix,
       maps: ["-map", "[a]"],
     };
   }
-  return { chain: "", maps: ["-map", `${hasMic ? micIdx : sysIdx}:a`] };
+  if (hasMic) return { chain: mf, maps: ["-map", micOut] };
+  return { chain: "", maps: ["-map", `${sysIdx}:a`] };
 }
 
 /**
@@ -265,7 +287,7 @@ export function buildRecordArgs(s: RecordSpec): string[] {
   // com os riscos da caneta. O ffmpeg volta a ter UMA captura só.
   const graph = screen.chain ? `[0:v]${screen.chain},format=yuv420p[v]` : `[0:v]format=yuv420p[v]`;
 
-  const audio = buildAudio(micIdx, sysIdx, s.audioTracks);
+  const audio = buildAudio(micIdx, sysIdx, s.audioTracks, !!s.micFilter);
   // O grafo é UMA string só: o áudio entra no mesmo `-filter_complex` do vídeo.
   args.push("-filter_complex", audio.chain ? `${graph};${audio.chain}` : graph, "-map", "[v]");
 
