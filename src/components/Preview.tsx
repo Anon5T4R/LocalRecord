@@ -21,6 +21,10 @@ interface Props {
   cameraId: string;
   corner: Corner;
   sizePct: number;
+  /** Opacidade da câmera em % (20–100). O palco a aplica pelo mesmo motivo que
+   *  já respeita canto e tamanho: quem grava é a janela de anotação, e a prévia
+   *  que mentisse sobre a transparência mandaria o usuário descobrir no play. */
+  opacityPct: number;
   onCornerChange: (c: Corner) => void;
   /** Trava os controles enquanto grava (mudar layout no meio não tem efeito:
    *  o grafo do ffmpeg já está montado). */
@@ -29,7 +33,7 @@ interface Props {
 
 
 export default function Preview(props: Props) {
-  const { grabber, cameraId, corner, sizePct, onCornerChange, disabled } = props;
+  const { grabber, cameraId, corner, sizePct, opacityPct, onCornerChange, disabled } = props;
   const [thumb, setThumb] = useState<string>("");
   const [camError, setCamError] = useState("");
   /** Por que o quadro da tela não veio. Vazio = não houve erro. */
@@ -151,7 +155,7 @@ export default function Preview(props: Props) {
   // que faz a prévia e o vídeo baterem.
   const marginPct = (MARGIN_PX / screenW) * 100;
   const marginPctY = (MARGIN_PX / screenH) * 100;
-  const camStyle: React.CSSProperties = { width: `${sizePct}%` };
+  const camStyle: React.CSSProperties = { width: `${sizePct}%`, opacity: opacityPct / 100 };
   if (dragging && stageRef.current) {
     const box = stageRef.current.getBoundingClientRect();
     camStyle.left = `${((dragging.x - box.left) / box.width) * 100}%`;

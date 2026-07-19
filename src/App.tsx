@@ -32,6 +32,8 @@ import {
   labelsFor,
   FPS_OPTIONS,
   loadSetup,
+  OPACITY_MAX,
+  OPACITY_MIN,
   reconcileSetup,
   saveSetup,
   type TargetFps,
@@ -177,6 +179,9 @@ export default function App() {
 
   const [corner, setCorner] = useState<Corner>(initial.corner);
   const [sizePct, setSizePct] = useState(initial.sizePct);
+  // Opacidade da câmera. Vale tanto pro palco quanto pro overlay: como o vídeo
+  // é a captura do overlay, prévia e resultado são a MESMA imagem.
+  const [camOpacity, setCamOpacity] = useState(initial.camOpacity);
   // O alvo de quadros por segundo. Deixou de ser constante na v0.5.1: 60 pra
   // quem tem folga, 24 pra quem tem câmera fraca — e é PRA BAIXO que a escolha
   // ajuda nesse caso, não pra cima.
@@ -239,6 +244,7 @@ export default function App() {
       setTracks(setup.tracks);
       setCorner(setup.corner);
       setSizePct(setup.sizePct);
+      setCamOpacity(setup.camOpacity);
       for (const d of dropped) {
         pushToast("info", t(DROP_KEY[d.kind], { device: d.label }));
       }
@@ -285,13 +291,14 @@ export default function App() {
       tracks,
       corner,
       sizePct,
+      camOpacity,
       fps,
       // Guarda o rótulo dos escolhidos AGORA: se um deles sumir na próxima
       // sessão, é só assim que o aviso consegue dizer o nome (o device já não
       // estará na lista pra consultar).
       labels: labelsFor(devices, [screen, camera, mic, output]),
     });
-  }, [screen, camera, mic, output, sysOn, micFilter, tracks, corner, sizePct, fps, devices]);
+  }, [screen, camera, mic, output, sysOn, micFilter, tracks, corner, sizePct, camOpacity, fps, devices]);
 
   // A sonda decide se o áudio do sistema é OFERECÍVEL nesta máquina. Ela não
   // captura nada — só pergunta ao Windows se existe saída de áudio e qual é.
@@ -442,7 +449,7 @@ export default function App() {
         } catch (e) {
           pushToast("info", t("rec.camOverlayOff", { error: String(e) }));
         }
-        await emit("annot-camera", { id: camera, corner, sizePct });
+        await emit("annot-camera", { id: camera, corner, sizePct, opacity: camOpacity });
       }
 
       const spec: RecordSpec = {
@@ -493,7 +500,7 @@ export default function App() {
       setPhase("idle");
       pushToast("error", t("rec.failed", { error: String(e) }));
     }
-  }, [camera, corner, encoder, fps, mic, micFilter, outDir, output, pattern, pushToast, sizePct, sysErr, sysOn, tracks]);
+  }, [camera, camOpacity, corner, encoder, fps, mic, micFilter, outDir, output, pattern, pushToast, sizePct, sysErr, sysOn, tracks]);
 
   // Contagem regressiva: o usuário precisa de tempo pra sair do LocalRecord e
   // ir pra janela que ele vai demonstrar.
@@ -796,6 +803,7 @@ export default function App() {
             cameraId={camera}
             corner={corner}
             sizePct={sizePct}
+            opacityPct={camOpacity}
             onCornerChange={setCorner}
             disabled={busy}
           />
@@ -812,6 +820,21 @@ export default function App() {
                   onChange={(e) => setSizePct(Number(e.target.value))}
                 />
                 <span className="muted small">{sizePct}%</span>
+              </div>
+              {/* Opacidade: mesma faixa do clamp do setup (ver OPACITY_MIN/MAX).
+                  Fica junto do tamanho porque as duas respondem à mesma
+                  pergunta — "quanto a câmera atrapalha o que estou mostrando". */}
+              <div className="size-row">
+                <span className="muted">{t("preview.camOpacity")}</span>
+                <input
+                  type="range"
+                  min={OPACITY_MIN}
+                  max={OPACITY_MAX}
+                  value={camOpacity}
+                  disabled={busy}
+                  onChange={(e) => setCamOpacity(Number(e.target.value))}
+                />
+                <span className="muted small">{camOpacity}%</span>
               </div>
             </div>
           )}

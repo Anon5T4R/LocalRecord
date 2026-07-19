@@ -4,6 +4,8 @@ import type { DeviceList } from "../sources";
 import {
   DEFAULT_SETUP,
   labelsFor,
+  OPACITY_MAX,
+  OPACITY_MIN,
   reconcileSetup,
   SIZE_MAX,
   SIZE_MIN,
@@ -31,6 +33,7 @@ const SAVED: Setup = {
   tracks: "separate",
   corner: "tl",
   sizePct: 33,
+  camOpacity: 70,
   fps: 60,
   labels: {
     "Logitech C920": "Logitech C920",
@@ -52,6 +55,7 @@ describe("reconcileSetup — caso feliz", () => {
     expect(setup.tracks).toBe("separate");
     expect(setup.corner).toBe("tl");
     expect(setup.sizePct).toBe(33);
+    expect(setup.camOpacity).toBe(70);
   });
 });
 
@@ -133,6 +137,20 @@ describe("reconcileSetup — layout validado/clampado (storage corrompido)", () 
     );
   });
 
+  it("camOpacity fora da faixa é clampado; lixo cai no default OPACO", () => {
+    expect(reconcileSetup({ ...SAVED, camOpacity: 500 }, FULL).setup.camOpacity).toBe(OPACITY_MAX);
+    // O piso não é 0: câmera invisível é indistinguível de câmera esquecida.
+    expect(reconcileSetup({ ...SAVED, camOpacity: 0 }, FULL).setup.camOpacity).toBe(OPACITY_MIN);
+    // O default tem que ser 100 (opaco): quem nunca mexeu no slider não pode
+    // ganhar uma câmera meio transparente por causa de um storage corrompido.
+    expect(DEFAULT_SETUP.camOpacity).toBe(100);
+    for (const lixo of [NaN, Infinity, "meio" as unknown as number, undefined]) {
+      expect(reconcileSetup({ ...SAVED, camOpacity: lixo }, FULL).setup.camOpacity).toBe(
+        DEFAULT_SETUP.camOpacity,
+      );
+    }
+  });
+
   it("corner/tracks inválidos caem no default", () => {
     const bad = { ...SAVED, corner: "xyz", tracks: "loud" } as unknown as Setup;
     const { setup } = reconcileSetup(bad, FULL);
@@ -148,6 +166,7 @@ describe("reconcileSetup — bordas", () => {
     expect(setup.camera).toBe("");
     expect(setup.corner).toBe("br");
     expect(setup.sizePct).toBe(DEFAULT_SETUP.sizePct);
+    expect(setup.camOpacity).toBe(100);
     // A tela sempre resolve pra principal mesmo sem nada salvo.
     expect(setup.screen).toBe("primary");
   });

@@ -38,6 +38,12 @@ export interface Setup {
   tracks: AudioTracks;
   corner: Corner;
   sizePct: number;
+  /** Opacidade da câmera no overlay, em % (ver OPACITY_MIN/MAX). Desde a v0.7.0
+   *  a câmera é um `<video>` da janela de anotação e o `ddagrab` filma o
+   *  resultado — então isto é CSS, não filtro do ffmpeg: o que a tela mostra é
+   *  literalmente o que entra no vídeo. Default 100 = opaco, o comportamento de
+   *  sempre pra quem nunca mexer no controle. */
+  camOpacity: number;
   /** Quadros por segundo que a gravação PEDE. Escolha do usuário desde a v0.5.1
    *  — 60 pra quem tem hardware e câmera que aguentam, 24 pra quem quer folga
    *  (webcam barata costuma não sustentar 30 e arrasta o resto junto). */
@@ -61,6 +67,14 @@ export type TargetFps = (typeof FPS_OPTIONS)[number];
 export const SIZE_MIN = 10;
 export const SIZE_MAX = 40;
 
+/** Faixa do slider de opacidade da câmera. O piso é 20 e não 0 de propósito:
+ *  câmera a 0% é câmera desligada, e pra isso já existe "Nenhuma" na lista de
+ *  fontes — um slider que apaga a imagem só produziria o take em que o usuário
+ *  jura que gravou a webcam e ela não está lá. Abaixo de ~20% a imagem já não
+ *  se lê sobre uma tela clara, então esse é o limite útil. */
+export const OPACITY_MIN = 20;
+export const OPACITY_MAX = 100;
+
 export const DEFAULT_SETUP: Setup = {
   screen: "",
   camera: "",
@@ -71,6 +85,7 @@ export const DEFAULT_SETUP: Setup = {
   tracks: "mixed",
   corner: "br",
   sizePct: 25,
+  camOpacity: 100,
   fps: 30,
   labels: {},
 };
@@ -183,6 +198,10 @@ export function reconcileSetup(saved: Partial<Setup> | null, list: DeviceList): 
   const tracks = TRACKS.includes(s.tracks as AudioTracks) ? (s.tracks as AudioTracks) : "mixed";
   const corner = CORNERS.includes(s.corner as Corner) ? (s.corner as Corner) : "br";
   const sizePct = clamp(s.sizePct as number, SIZE_MIN, SIZE_MAX, DEFAULT_SETUP.sizePct);
+  // Mesmo cuidado do sizePct: um valor corrompido aqui viraria `opacity` no
+  // overlay — e `opacity: NaN` é declaração inválida, ou seja, a câmera voltaria
+  // opaca sem aviso enquanto o slider mostra outra coisa.
+  const camOpacity = clamp(s.camOpacity as number, OPACITY_MIN, OPACITY_MAX, DEFAULT_SETUP.camOpacity);
   // Lista fechada, não faixa: um fps arbitrário vindo de storage corrompido iria
   // direto pro ffmpeg e pra escolha do modo da câmera.
   const fps = (FPS_OPTIONS as readonly number[]).includes(s.fps as number)
@@ -192,7 +211,20 @@ export function reconcileSetup(saved: Partial<Setup> | null, list: DeviceList): 
   const micFilter = s.micFilter === true;
 
   return {
-    setup: { screen, camera, mic, output, sysOn, micFilter, tracks, corner, sizePct, fps, labels },
+    setup: {
+      screen,
+      camera,
+      mic,
+      output,
+      sysOn,
+      micFilter,
+      tracks,
+      corner,
+      sizePct,
+      camOpacity,
+      fps,
+      labels,
+    },
     dropped,
   };
 }

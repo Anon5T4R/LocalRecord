@@ -43,6 +43,7 @@ const pt = {
   "preview.noShot": "Sem prévia da tela",
   "preview.camFailed": "Não deu pra abrir a câmera na prévia: {error}",
   "preview.camSize": "Tamanho da câmera",
+  "preview.camOpacity": "Opacidade da câmera",
 
   "out.title": "Saída",
   "out.folder": "Pasta",
@@ -158,6 +159,7 @@ const en: Record<MessageKey, string> = {
   "preview.noShot": "No screen preview",
   "preview.camFailed": "Couldn't open the camera in the preview: {error}",
   "preview.camSize": "Camera size",
+  "preview.camOpacity": "Camera opacity",
 
   "out.title": "Output",
   "out.folder": "Folder",
@@ -271,6 +273,7 @@ const es: Record<MessageKey, string> = {
   "preview.noShot": "Sin vista previa de la pantalla",
   "preview.camFailed": "No se pudo abrir la cámara en la vista previa: {error}",
   "preview.camSize": "Tamaño de la cámara",
+  "preview.camOpacity": "Opacidad de la cámara",
 
   "out.title": "Salida",
   "out.folder": "Carpeta",

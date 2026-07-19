@@ -52,7 +52,7 @@ export default function AnnotOverlay() {
   // O motivo é medido: duas capturas ao vivo no mesmo processo ffmpeg derrubam a
   // gravação de 30 pra 10 fps (ver `args.ts`). Aqui o ffmpeg volta a ter uma
   // captura só, e a câmera fica por conta do webview, que já sabia exibi-la.
-  const [cam, setCam] = useState<{ id: string; corner: Corner; sizePct: number } | null>(null);
+  const [cam, setCam] = useState<{ id: string; corner: Corner; sizePct: number; opacity?: number } | null>(null);
   const [camAspect, setCamAspect] = useState(16 / 9);
   const camRef = useRef<HTMLVideoElement>(null);
 
@@ -156,7 +156,7 @@ export default function AnnotOverlay() {
   // Tauri). Chega quando a gravação começa e some quando ela para.
   useEffect(() => {
     if (!isTauri) return;
-    const un = listen<{ id: string; corner: Corner; sizePct: number } | null>(
+    const un = listen<{ id: string; corner: Corner; sizePct: number; opacity?: number } | null>(
       "annot-camera",
       (e) => setCam(e.payload),
     );
@@ -371,13 +371,23 @@ export default function AnnotOverlay() {
             const v = e.currentTarget;
             if (v.videoWidth > 0 && v.videoHeight > 0) setCamAspect(v.videoWidth / v.videoHeight);
           }}
-          style={cameraBox(
-            cam.corner,
-            cam.sizePct,
-            window.innerWidth,
-            window.innerHeight,
-            camAspect,
-          )}
+          style={{
+            ...cameraBox(
+              cam.corner,
+              cam.sizePct,
+              window.innerWidth,
+              window.innerHeight,
+              camAspect,
+            ),
+            // `opacity` no ELEMENTO, de propósito: a `.annot-cam` tem canto
+            // arredondado e sombra, e opacity no elemento leva a moldura junto.
+            // É o que se quer — câmera meio transparente com sombra opaca por
+            // baixo pareceria um retângulo sujo grudado na tela, e a sombra é
+            // justamente a parte que mais chama atenção no que se quer discreto.
+            // Sem valor no payload = opaco: o default nunca muda o take de quem
+            // não mexeu no controle.
+            opacity: (cam.opacity ?? 100) / 100,
+          }}
         />
       )}
 
