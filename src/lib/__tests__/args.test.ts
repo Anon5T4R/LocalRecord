@@ -236,6 +236,34 @@ describe("buildRemuxArgs", () => {
       "-f", "mp4", "C:/v/take.mp4",
     ]);
   });
+
+  it("faixas separadas: o nome sobrevive ao MP4 via handler_name", () => {
+    // O muxer MP4 joga fora o `title` do MKV (vira "SoundHandler"); sem esta
+    // linha o LocalVideo mostraria duas faixas anônimas — medido no teste
+    // cruzado Record↔Video de 2026-07-19.
+    const line = buildRemuxArgs("a.mkv", "a.mp4", {
+      ...base,
+      mic: "Mic",
+      micAudio: MIC,
+      sysAudio: SYS,
+      audioTracks: "separate",
+    }).join(" ");
+    expect(line).toContain("-metadata:s:a:0 handler_name=Microfone");
+    expect(line).toContain("-metadata:s:a:1 handler_name=Áudio do sistema");
+    // E segue sendo cópia: metadata não pode virar re-encode.
+    expect(line).toContain("-c copy");
+  });
+
+  it("mixado (uma faixa) não ganha handler_name — nome só quando há o que distinguir", () => {
+    const line = buildRemuxArgs("a.mkv", "a.mp4", {
+      ...base,
+      mic: "Mic",
+      micAudio: MIC,
+      sysAudio: SYS,
+      audioTracks: "mixed",
+    }).join(" ");
+    expect(line).not.toContain("handler_name");
+  });
 });
 
 describe("expandPattern", () => {

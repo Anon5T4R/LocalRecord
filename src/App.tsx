@@ -464,7 +464,7 @@ export default function App() {
         opts: {
           args: buildRecordArgs(spec),
           fallbackArgs,
-          remuxArgs: buildRemuxArgs(mkvPath, mp4Path),
+          remuxArgs: buildRemuxArgs(mkvPath, mp4Path, spec),
           mkvPath,
           mp4Path,
           // O alvo vai junto pro Rust poder comparar com o fps REAL e falar

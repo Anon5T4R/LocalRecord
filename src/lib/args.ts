@@ -300,8 +300,15 @@ export function buildThumbArgs(grabber: Grabber): string[] {
  *
  * `+faststart` põe o índice na frente pro arquivo abrir na hora em player/web.
  */
-export function buildRemuxArgs(mkvPath: string, mp4Path: string): string[] {
-  return ["-i", mkvPath, "-map", "0", "-c", "copy", "-movflags", "+faststart", "-f", "mp4", mp4Path];
+export function buildRemuxArgs(mkvPath: string, mp4Path: string, spec?: RecordSpec): string[] {
+  // O muxer MP4 DESCARTA o `title` que as faixas trazem do MKV (vira o genérico
+  // "SoundHandler") — mas um `handler_name` setado de propósito sobrevive, e é
+  // ele que o LocalVideo lê como nome da faixa quando o title não existe.
+  const separate = spec?.audioTracks === "separate" && !!spec.micAudio && !!spec.sysAudio;
+  const meta = separate
+    ? ["-metadata:s:a:0", `handler_name=${TRACK_MIC}`, "-metadata:s:a:1", `handler_name=${TRACK_SYS}`]
+    : [];
+  return ["-i", mkvPath, "-map", "0", "-c", "copy", ...meta, "-movflags", "+faststart", "-f", "mp4", mp4Path];
 }
 
 /** Nome do arquivo a partir do padrão do usuário. Tokens: {date} {time}.
