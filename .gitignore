@@ -7,6 +7,10 @@ dist-ssr
 src-tauri/binaries/ffmpeg/*
 !src-tauri/binaries/ffmpeg/placeholder.txt
 
+# Modelo de segmentação baixado pelo scripts/fetch-model.ps1/.sh — mesma regra
+# do ffmpeg: binário de terceiro não é versionado, vem do espelho com sha256.
+public/models/*
+
 # editor / OS
 .DS_Store
 .vscode/*

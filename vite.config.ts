@@ -13,6 +13,15 @@ export default defineConfig(async () => ({
     dedupe: ["react", "react-dom"],
   },
 
+  // Herdado do LocalPaint (v0.5.0 dele): o onnxruntime-web carrega o runtime
+  // wasm com um `import()` de URL calculada em runtime, e o pré-bundle do dev
+  // reescreve esse import — o backend passa a falhar com "no available backend
+  // found" SÓ EM DEV. Fora do optimizeDeps, o loader fica nativo nos dois
+  // mundos e dev = prod.
+  optimizeDeps: {
+    exclude: ["onnxruntime-web"],
+  },
+
   // Duas páginas: a UI (`index.html`) e o overlay de anotação
   // (`annot.html`, a janela `annot`). Sem declarar as duas entradas aqui, o
   // build só emitiria a index e a janela do overlay abriria em branco NO

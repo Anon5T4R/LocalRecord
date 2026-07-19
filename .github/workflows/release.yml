@@ -76,6 +76,18 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: bash scripts/fetch-ffmpeg.sh
 
+      # Idem: o modelo do fundo de câmera (462 KB) tem que estar em
+      # public/models ANTES do build, senão o vite gera um dist sem ele e o
+      # fundo virtual falha só no app instalado.
+      - name: Baixar modelo de segmentação — Windows
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File scripts/fetch-model.ps1
+
+      - name: Baixar modelo de segmentação — Linux
+        if: matrix.platform == 'ubuntu-22.04'
+        run: bash scripts/fetch-model.sh
+
       - name: Cargo.lock em dia (--locked)
         working-directory: src-tauri
         run: cargo fetch --locked

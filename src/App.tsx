@@ -39,6 +39,7 @@ import {
   type TargetFps,
   type DroppedKind,
 } from "./lib/setup";
+import { CAM_BGS, fitWithin, type CamBg } from "./lib/cambg";
 import { useUi } from "./state/ui";
 
 // Fora do Tauri (smoke no navegador com `npm run preview`) não há back: a UI
@@ -182,6 +183,11 @@ export default function App() {
   // Opacidade da câmera. Vale tanto pro palco quanto pro overlay: como o vídeo
   // é a captura do overlay, prévia e resultado são a MESMA imagem.
   const [camOpacity, setCamOpacity] = useState(initial.camOpacity);
+  // Fundo virtual da câmera. Mora aqui junto de tamanho/opacidade porque
+  // responde à mesma pergunta que eles — "como a câmera aparece no take" — e
+  // viaja pro overlay pelo MESMO evento `annot-camera`.
+  const [camBg, setCamBg] = useState<CamBg>(initial.camBg);
+  const [camBgImage, setCamBgImage] = useState(initial.camBgImage);
   // O alvo de quadros por segundo. Deixou de ser constante na v0.5.1: 60 pra
   // quem tem folga, 24 pra quem tem câmera fraca — e é PRA BAIXO que a escolha
   // ajuda nesse caso, não pra cima.
@@ -245,6 +251,8 @@ export default function App() {
       setCorner(setup.corner);
       setSizePct(setup.sizePct);
       setCamOpacity(setup.camOpacity);
+      setCamBg(setup.camBg);
+      setCamBgImage(setup.camBgImage);
       for (const d of dropped) {
         pushToast("info", t(DROP_KEY[d.kind], { device: d.label }));
       }
@@ -292,13 +300,15 @@ export default function App() {
       corner,
       sizePct,
       camOpacity,
+      camBg,
+      camBgImage,
       fps,
       // Guarda o rótulo dos escolhidos AGORA: se um deles sumir na próxima
       // sessão, é só assim que o aviso consegue dizer o nome (o device já não
       // estará na lista pra consultar).
       labels: labelsFor(devices, [screen, camera, mic, output]),
     });
-  }, [screen, camera, mic, output, sysOn, micFilter, tracks, corner, sizePct, camOpacity, fps, devices]);
+  }, [screen, camera, mic, output, sysOn, micFilter, tracks, corner, sizePct, camOpacity, camBg, camBgImage, fps, devices]);
 
   // A sonda decide se o áudio do sistema é OFERECÍVEL nesta máquina. Ela não
   // captura nada — só pergunta ao Windows se existe saída de áudio e qual é.
@@ -376,6 +386,46 @@ export default function App() {
     };
   }, []);
 
+  /**
+   * Escolha da imagem de fundo. Ela é REAMOSTRADA e reencodada aqui, e o que
+   * fica guardado são os PIXELS (data URL), não o caminho do arquivo.
+   *
+   * O caminho seria o óbvio e é justamente a armadilha: traz de volta o
+   * problema que o `reconcileSetup` já enfrenta com device — o arquivo some
+   * (pendrive tirado, pasta renomeada, Downloads limpo) e a gravação sai sem
+   * fundo sem ninguém entender. Guardando os pixels, o fundo escolhido hoje
+   * ainda funciona meses depois, offline. O preço é tamanho no localStorage, e
+   * é ele que o `fitWithin` paga: uma foto de 12 MP vira ~1280 px de lado, que
+   * é mais do que a caixa da câmera mostra em qualquer tela.
+   */
+  const onPickBgImage = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      // Limpa o input pra escolher O MESMO arquivo de novo disparar o evento
+      // (sem isso, corrigir um erro exigiria escolher outra imagem no meio).
+      e.target.value = "";
+      if (!file) return;
+      try {
+        const bmp = await createImageBitmap(file);
+        const { w, h } = fitWithin(bmp.width, bmp.height);
+        const cv = document.createElement("canvas");
+        cv.width = w;
+        cv.height = h;
+        const ctx = cv.getContext("2d");
+        if (!ctx) throw new Error("canvas");
+        ctx.drawImage(bmp, 0, 0, w, h);
+        bmp.close();
+        // JPEG e não PNG: o fundo é foto, e um PNG de 1280 px viraria alguns MB
+        // de base64 — estouraria o teto do `normalizeCamBgImage` e levaria o
+        // save do setup inteiro junto.
+        setCamBgImage(cv.toDataURL("image/jpeg", 0.85));
+      } catch {
+        pushToast("error", t("preview.camBgImageFailed"));
+      }
+    },
+    [pushToast],
+  );
+
   const doStart = useCallback(async () => {
     const stamp = expandPattern(pattern, new Date());
     const base = `${outDir}/${stamp}`;
@@ -449,7 +499,17 @@ export default function App() {
         } catch (e) {
           pushToast("info", t("rec.camOverlayOff", { error: String(e) }));
         }
-        await emit("annot-camera", { id: camera, corner, sizePct, opacity: camOpacity });
+        await emit("annot-camera", {
+          id: camera,
+          corner,
+          sizePct,
+          opacity: camOpacity,
+          // O fundo viaja no MESMO evento (não há canal novo): o overlay já
+          // reage a este payload, e um segundo canal criaria a chance de a
+          // câmera aparecer com o fundo de uma configuração e a caixa de outra.
+          bg: camBg,
+          bgImage: camBgImage,
+        });
       }
 
       const spec: RecordSpec = {
@@ -500,7 +560,7 @@ export default function App() {
       setPhase("idle");
       pushToast("error", t("rec.failed", { error: String(e) }));
     }
-  }, [camera, camOpacity, corner, encoder, fps, mic, micFilter, outDir, output, pattern, pushToast, sizePct, sysErr, sysOn, tracks]);
+  }, [camera, camBg, camBgImage, camOpacity, corner, encoder, fps, mic, micFilter, outDir, output, pattern, pushToast, sizePct, sysErr, sysOn, tracks]);
 
   // Contagem regressiva: o usuário precisa de tempo pra sair do LocalRecord e
   // ir pra janela que ele vai demonstrar.
@@ -836,6 +896,41 @@ export default function App() {
                 />
                 <span className="muted small">{camOpacity}%</span>
               </div>
+
+              {/* Fundo virtual. "Nenhum" é o default e não custa CPU nenhuma —
+                  desfoque e imagem sobem o modelo de segmentação (462 KB) e
+                  gastam ~14 ms de UM núcleo por quadro, medidos. */}
+              <div className="size-row">
+                <span className="muted">{t("preview.camBg")}</span>
+                <select
+                  value={camBg}
+                  disabled={busy}
+                  onChange={(e) => setCamBg(e.target.value as CamBg)}
+                >
+                  {CAM_BGS.map((b) => (
+                    <option key={b} value={b}>
+                      {t(`preview.camBg.${b}`)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {camBg === "image" && (
+                <div className="size-row">
+                  <span className="muted">{t("preview.camBgImage")}</span>
+                  <input type="file" accept="image/*" disabled={busy} onChange={onPickBgImage} />
+                  {camBgImage ? (
+                    <button className="ghost" disabled={busy} onClick={() => setCamBgImage("")}>
+                      {t("preview.camBgImageClear")}
+                    </button>
+                  ) : (
+                    // Sem imagem o modo cai pra "nenhum" (effectiveCamBg) — dizer
+                    // isso aqui evita o take em que o usuário jura ter escolhido
+                    // fundo e ele não aparece.
+                    <span className="muted small">{t("preview.camBgImageNone")}</span>
+                  )}
+                </div>
+              )}
             </div>
           )}
 

@@ -9,6 +9,7 @@
  */
 
 import type { AudioTracks, Corner } from "./args";
+import { effectiveCamBg, normalizeCamBg, normalizeCamBgImage, type CamBg } from "./cambg";
 import { PRIMARY_SCREEN, pickDefault, type Device, type DeviceList } from "./sources";
 
 export const SETUP_KEY = "localrecord.setup";
@@ -44,6 +45,13 @@ export interface Setup {
    *  literalmente o que entra no vídeo. Default 100 = opaco, o comportamento de
    *  sempre pra quem nunca mexer no controle. */
   camOpacity: number;
+  /** Fundo virtual da câmera: nenhum (default), desfoque ou imagem. Custa CPU
+   *  só quando é `blur`/`image` — ver `needsSegmentation`. */
+  camBg: CamBg;
+  /** A imagem do fundo, como data URL (PIXELS, não caminho — ver `cambg.ts`
+   *  pro porquê: caminho traz de volta o problema do arquivo que some). Vazio
+   *  = nenhuma escolhida, e aí `camBg: "image"` cai pra "none". */
+  camBgImage: string;
   /** Quadros por segundo que a gravação PEDE. Escolha do usuário desde a v0.5.1
    *  — 60 pra quem tem hardware e câmera que aguentam, 24 pra quem quer folga
    *  (webcam barata costuma não sustentar 30 e arrasta o resto junto). */
@@ -86,6 +94,8 @@ export const DEFAULT_SETUP: Setup = {
   corner: "br",
   sizePct: 25,
   camOpacity: 100,
+  camBg: "none",
+  camBgImage: "",
   fps: 30,
   labels: {},
 };
@@ -202,6 +212,12 @@ export function reconcileSetup(saved: Partial<Setup> | null, list: DeviceList): 
   // overlay — e `opacity: NaN` é declaração inválida, ou seja, a câmera voltaria
   // opaca sem aviso enquanto o slider mostra outra coisa.
   const camOpacity = clamp(s.camOpacity as number, OPACITY_MIN, OPACITY_MAX, DEFAULT_SETUP.camOpacity);
+  // A imagem é validada ANTES do modo, porque o modo depende dela: um
+  // `camBg: "image"` cujo data URL foi recusado (corrompido, grande demais, ou
+  // trocado por uma URL remota) tem que cair pra "none" — senão a composição
+  // desenharia fundo nenhum e o take sairia com a câmera num buraco preto.
+  const camBgImage = normalizeCamBgImage(s.camBgImage);
+  const camBg = effectiveCamBg(normalizeCamBg(s.camBg), camBgImage);
   // Lista fechada, não faixa: um fps arbitrário vindo de storage corrompido iria
   // direto pro ffmpeg e pra escolha do modo da câmera.
   const fps = (FPS_OPTIONS as readonly number[]).includes(s.fps as number)
@@ -222,6 +238,8 @@ export function reconcileSetup(saved: Partial<Setup> | null, list: DeviceList): 
       corner,
       sizePct,
       camOpacity,
+      camBg,
+      camBgImage,
       fps,
       labels,
     },

@@ -4,6 +4,17 @@ import { listen } from "@tauri-apps/api/event";
 import { cameraBox, type Corner } from "../lib/args";
 import { openCamera } from "../lib/camera";
 import {
+  BG_BLUR_PX,
+  coverRect,
+  effectiveCamBg,
+  needsSegmentation,
+  normalizeCamBg,
+  normalizeCamBgImage,
+  type CamBg,
+} from "../lib/cambg";
+import { createSegmenter, type Segmenter } from "../lib/segmenter";
+import { SEG_DIM } from "../lib/segtypes";
+import {
   COLORS,
   eraseAt,
   shouldAppend,
@@ -19,6 +30,20 @@ const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
 interface AnnotSnapshot {
   armed: boolean;
   pen: boolean;
+}
+
+/** O que a janela principal manda pelo evento `annot-camera`.
+ *
+ *  Os campos novos são OPCIONAIS de propósito: o payload é o contrato entre
+ *  duas janelas que podem estar em versões diferentes durante um HMR, e um
+ *  `bg` ausente tem que significar "como sempre foi", não "quebrou". */
+interface CamPayload {
+  id: string;
+  corner: Corner;
+  sizePct: number;
+  opacity?: number;
+  bg?: string;
+  bgImage?: string;
 }
 
 /** Raio da borracha em px de tela. Generoso de propósito: quem está apagando
@@ -52,9 +77,33 @@ export default function AnnotOverlay() {
   // O motivo é medido: duas capturas ao vivo no mesmo processo ffmpeg derrubam a
   // gravação de 30 pra 10 fps (ver `args.ts`). Aqui o ffmpeg volta a ter uma
   // captura só, e a câmera fica por conta do webview, que já sabia exibi-la.
-  const [cam, setCam] = useState<{ id: string; corner: Corner; sizePct: number; opacity?: number } | null>(null);
+  const [cam, setCam] = useState<CamPayload | null>(null);
   const [camAspect, setCamAspect] = useState(16 / 9);
   const camRef = useRef<HTMLVideoElement>(null);
+
+  // ---- fundo virtual da câmera (v0.7.7) ------------------------------------
+  // O modo que REALMENTE vale: `image` sem imagem carregada é `none` (ver
+  // `effectiveCamBg`). Tudo abaixo é no-op enquanto for `none`, e é o default —
+  // quem não pediu fundo não paga worker, modelo, canvas nem um quadro de CPU.
+  const bg: CamBg = effectiveCamBg(normalizeCamBg(cam?.bg), normalizeCamBgImage(cam?.bgImage));
+  /** O canvas que SUBSTITUI o `<video>` na tela quando há fundo. */
+  const camCanvasRef = useRef<HTMLCanvasElement>(null);
+  const segRef = useRef<Segmenter | null>(null);
+  /** A imagem de fundo já decodificada. `undefined` = ainda carregando. */
+  const bgBitmapRef = useRef<ImageBitmap | null>(null);
+  // Canvases de trabalho, criados uma vez: recriar a cada quadro seria alocar
+  // (e descartar) três buffers 30 vezes por segundo.
+  const workRef = useRef<{
+    /** Entrada do modelo, SEG_DIM². */
+    inCv: HTMLCanvasElement;
+    inCtx: CanvasRenderingContext2D;
+    /** A máscara devolvida pelo worker, pra virar textura componível. */
+    maskCv: HTMLCanvasElement;
+    maskCtx: CanvasRenderingContext2D;
+    /** A pessoa recortada, no tamanho da caixa. */
+    perCv: HTMLCanvasElement;
+    perCtx: CanvasRenderingContext2D;
+  } | null>(null);
 
   // O traço em curso vive num ref, não no state: um `setState` por evento de
   // mouse (dezenas por segundo) faria a caneta arrastar atrás do cursor.
@@ -156,10 +205,7 @@ export default function AnnotOverlay() {
   // Tauri). Chega quando a gravação começa e some quando ela para.
   useEffect(() => {
     if (!isTauri) return;
-    const un = listen<{ id: string; corner: Corner; sizePct: number; opacity?: number } | null>(
-      "annot-camera",
-      (e) => setCam(e.payload),
-    );
+    const un = listen<CamPayload | null>("annot-camera", (e) => setCam(e.payload));
     return () => {
       void un.then((f) => f());
     };
@@ -194,6 +240,160 @@ export default function AnnotOverlay() {
       if (stream) for (const tr of stream.getTracks()) tr.stop();
     };
   }, [cam?.id]);
+
+  // O worker de segmentação vive enquanto houver fundo pedido. Sobe e desce com
+  // a NECESSIDADE, não com a gravação: trocar de desfoque pra imagem não
+  // recarrega o modelo (são 462 KB e ~250 ms de sessão), mas voltar pra
+  // "nenhum" mata o worker de verdade — deixá-lo vivo seria manter um núcleo
+  // ocupado pra nada durante o resto do take.
+  const wantSeg = needsSegmentation(bg);
+  useEffect(() => {
+    if (!wantSeg) return;
+    const seg = createSegmenter();
+    segRef.current = seg;
+    return () => {
+      segRef.current = null;
+      seg.dispose();
+    };
+  }, [wantSeg]);
+
+  // Canvases de trabalho: uma vez só, na primeira vez que houver fundo.
+  useEffect(() => {
+    if (!wantSeg || workRef.current) return;
+    const mk = (w: number, h: number, readback = false) => {
+      const cv = document.createElement("canvas");
+      cv.width = w;
+      cv.height = h;
+      // `willReadFrequently` só no canvas de onde se LÊ: sem a dica o Chromium
+      // mantém o buffer na GPU e cada `getImageData` vira um round-trip.
+      const ctx = cv.getContext("2d", readback ? { willReadFrequently: true } : undefined)!;
+      return { cv, ctx };
+    };
+    const a = mk(SEG_DIM, SEG_DIM, true);
+    const b = mk(SEG_DIM, SEG_DIM);
+    const c = mk(16, 16); // redimensionado no primeiro quadro, ver compose
+    workRef.current = {
+      inCv: a.cv,
+      inCtx: a.ctx,
+      maskCv: b.cv,
+      maskCtx: b.ctx,
+      perCv: c.cv,
+      perCtx: c.ctx,
+    };
+  }, [wantSeg]);
+
+  // A imagem de fundo, decodificada uma vez por escolha (e não por quadro).
+  // `createImageBitmap` e não `<img>`: o bitmap já vem pronto pro canvas, sem
+  // decodificação escondida no meio do laço de composição.
+  const bgImage = bg === "image" ? normalizeCamBgImage(cam?.bgImage) : "";
+  useEffect(() => {
+    let alive = true;
+    if (!bgImage) {
+      bgBitmapRef.current?.close();
+      bgBitmapRef.current = null;
+      return;
+    }
+    fetch(bgImage)
+      .then((r) => r.blob())
+      .then((b) => createImageBitmap(b))
+      .then((bmp) => {
+        if (!alive) {
+          bmp.close();
+          return;
+        }
+        bgBitmapRef.current?.close();
+        bgBitmapRef.current = bmp;
+      })
+      // Data URL corrompido: fica sem bitmap e a composição desenha a câmera
+      // crua (ver compose) — nunca um buraco preto no take.
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [bgImage]);
+
+  // O LAÇO DE COMPOSIÇÃO. Roda só quando há fundo; com "nenhum" o `<video>`
+  // volta a desenhar sozinho e este efeito nem monta.
+  //
+  // rAF e não `requestVideoFrameCallback`: o vídeo fica `display:none` quando o
+  // canvas assume (senão apareceriam os dois), e rVFC depende de o elemento
+  // APRESENTAR quadro. O rAF é do documento — esta janela está visível na tela
+  // (é ela que o ddagrab filma), então ele bate no ritmo do monitor.
+  useEffect(() => {
+    if (!wantSeg || !cam) return;
+    let raf = 0;
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      const video = camRef.current;
+      const cv = camCanvasRef.current;
+      const work = workRef.current;
+      if (!video || !cv || !work || video.readyState < 2 || video.videoWidth === 0) return;
+
+      const box = cameraBox(cam.corner, cam.sizePct, window.innerWidth, window.innerHeight, camAspect);
+      const dpr = window.devicePixelRatio || 1;
+      const pw = Math.max(1, Math.round(box.width * dpr));
+      const ph = Math.max(1, Math.round(box.height * dpr));
+      // Canvas em pixels FÍSICOS: mesma regra do canvas dos riscos — num
+      // monitor a 150% o borrado iria pro vídeo junto.
+      if (cv.width !== pw || cv.height !== ph) {
+        cv.width = pw;
+        cv.height = ph;
+      }
+      if (work.perCv.width !== pw || work.perCv.height !== ph) {
+        work.perCv.width = pw;
+        work.perCv.height = ph;
+      }
+      const ctx = cv.getContext("2d");
+      if (!ctx) return;
+
+      // 1. Alimenta o worker. Ele descarta o quadro se estiver ocupado — é o
+      //    que mantém o custo elástico (ver `segmenter.ts`).
+      work.inCtx.drawImage(video, 0, 0, SEG_DIM, SEG_DIM);
+      segRef.current?.push(work.inCtx.getImageData(0, 0, SEG_DIM, SEG_DIM).data);
+
+      const mask = segRef.current?.mask() ?? null;
+      if (!mask) {
+        // Ainda sem máscara (primeiros ~300 ms, ou o modelo não carregou):
+        // desenha a câmera crua. É exatamente o que o usuário veria sem a
+        // feature — degradar pro comportamento de sempre, nunca pra tela preta.
+        ctx.clearRect(0, 0, pw, ph);
+        ctx.drawImage(video, 0, 0, pw, ph);
+        return;
+      }
+      work.maskCtx.putImageData(mask, 0, 0);
+
+      // 2. O FUNDO.
+      ctx.clearRect(0, 0, pw, ph);
+      const bmp = bgBitmapRef.current;
+      if (bg === "image" && bmp) {
+        // `coverRect` e não um drawImage esticado: a foto do usuário tem o
+        // aspecto dela e a caixa tem o da webcam.
+        const r = coverRect(bmp.width, bmp.height, pw, ph);
+        ctx.drawImage(bmp, r.x, r.y, r.w, r.h, 0, 0, pw, ph);
+      } else {
+        // Desfoque de VERDADE: borra uma cópia do quadro e depois cola a pessoa
+        // NÍTIDA por cima. Um `filter: blur()` no `<video>` inteiro borraria a
+        // pessoa junto — isso não é fundo desfocado, é câmera fora de foco.
+        ctx.filter = `blur(${BG_BLUR_PX * dpr}px)`;
+        ctx.drawImage(video, 0, 0, pw, ph);
+        ctx.filter = "none";
+      }
+
+      // 3. A PESSOA, recortada pela máscara e colada por cima.
+      work.perCtx.globalCompositeOperation = "source-over";
+      work.perCtx.clearRect(0, 0, pw, ph);
+      work.perCtx.drawImage(video, 0, 0, pw, ph);
+      // `destination-in` = mantém só onde a máscara tem alpha. A máscara sobe de
+      // 256² pro tamanho da caixa com a suavização do próprio drawImage, que é
+      // o que dá a borda macia de graça.
+      work.perCtx.globalCompositeOperation = "destination-in";
+      work.perCtx.drawImage(work.maskCv, 0, 0, pw, ph);
+      work.perCtx.globalCompositeOperation = "source-over";
+      ctx.drawImage(work.perCv, 0, 0);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [wantSeg, cam, camAspect, bg]);
 
   // Rede de segurança do teclado. Com a caixinha aberta, tecla que chegue na
   // JANELA e não no campo ainda entra no texto.
@@ -358,6 +558,10 @@ export default function AnnotOverlay() {
         onPointerCancel={onUp}
       />
 
+      {/* Com fundo virtual, o `<video>` vira só a FONTE: some da tela
+          (`display:none`) e quem aparece é o canvas composto logo abaixo. Ele
+          continua tocando — é `MediaStream` ao vivo, não depende de estar
+          visível pra decodificar — e o rAF do laço puxa o quadro atual dele. */}
       {cam && (
         <video
           ref={camRef}
@@ -386,6 +590,23 @@ export default function AnnotOverlay() {
             // justamente a parte que mais chama atenção no que se quer discreto.
             // Sem valor no payload = opaco: o default nunca muda o take de quem
             // não mexeu no controle.
+            opacity: (cam.opacity ?? 100) / 100,
+            ...(bg === "none" ? null : { display: "none" }),
+          }}
+        />
+      )}
+
+      {/* O canvas herda a MESMA `.annot-cam` (canto arredondado + sombra) e a
+          mesma caixa: quem olha o take não distingue "câmera" de "câmera com
+          fundo", só o fundo muda. A opacidade continua no ELEMENTO pelo motivo
+          da v0.7.6 — sombra opaca por baixo de imagem translúcida pareceria um
+          retângulo sujo grudado na tela. */}
+      {cam && bg !== "none" && (
+        <canvas
+          ref={camCanvasRef}
+          className="annot-cam"
+          style={{
+            ...cameraBox(cam.corner, cam.sizePct, window.innerWidth, window.innerHeight, camAspect),
             opacity: (cam.opacity ?? 100) / 100,
           }}
         />

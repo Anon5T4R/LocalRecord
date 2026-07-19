@@ -34,6 +34,8 @@ const SAVED: Setup = {
   corner: "tl",
   sizePct: 33,
   camOpacity: 70,
+  camBg: "none",
+  camBgImage: "",
   fps: 60,
   labels: {
     "Logitech C920": "Logitech C920",
@@ -220,5 +222,48 @@ describe("alvo de fps", () => {
       const corrompido = { ...SAVED, fps: ruim } as unknown as Setup;
       expect(reconcileSetup(corrompido, FULL).setup.fps).toBe(DEFAULT_SETUP.fps);
     }
+  });
+});
+
+describe("fundo virtual da câmera", () => {
+  const PNG = "data:image/png;base64,iVBORw0KGgo=";
+
+  it("o default é 'none' — quem nunca mexeu não paga CPU nem muda o take", () => {
+    const r = reconcileSetup(null, FULL).setup;
+    expect(r.camBg).toBe("none");
+    expect(r.camBgImage).toBe("");
+  });
+
+  it("restaura desfoque e imagem", () => {
+    expect(reconcileSetup({ ...SAVED, camBg: "blur" } as unknown as Setup, FULL).setup.camBg).toBe("blur");
+    const comFoto = { ...SAVED, camBg: "image", camBgImage: PNG } as unknown as Setup;
+    const r = reconcileSetup(comFoto, FULL).setup;
+    expect(r.camBg).toBe("image");
+    expect(r.camBgImage).toBe(PNG);
+  });
+
+  it("modo corrompido cai em 'none'", () => {
+    for (const ruim of ["greenscreen", 3, null, ""]) {
+      const c = { ...SAVED, camBg: ruim } as unknown as Setup;
+      expect(reconcileSetup(c, FULL).setup.camBg).toBe("none");
+    }
+  });
+
+  // O caso que a tarefa mandou pensar (o "device que sumiu" aplicado ao fundo):
+  // o modo pede imagem e a imagem não está utilizável.
+  it("'image' sem imagem válida cai pra 'none', e não pra 'blur'", () => {
+    const semFoto = { ...SAVED, camBg: "image", camBgImage: "" } as unknown as Setup;
+    expect(reconcileSetup(semFoto, FULL).setup.camBg).toBe("none");
+
+    const urlRemota = { ...SAVED, camBg: "image", camBgImage: "https://exemplo.com/f.png" } as unknown as Setup;
+    const r = reconcileSetup(urlRemota, FULL).setup;
+    expect(r.camBg).toBe("none");
+    // E a URL recusada não sobrevive no setup aplicado.
+    expect(r.camBgImage).toBe("");
+  });
+
+  it("desfoque sobrevive sem imagem nenhuma", () => {
+    const c = { ...SAVED, camBg: "blur", camBgImage: "" } as unknown as Setup;
+    expect(reconcileSetup(c, FULL).setup.camBg).toBe("blur");
   });
 });
