@@ -330,6 +330,15 @@ select:disabled {
   gap: 10px;
   padding: 0 16px 14px;
 }
+/* O `hidden` do corpo precisa VENCER o `display` daqui.
+   Achado medindo o app: `[hidden]` é só uma regra da folha do navegador
+   (`display: none`), e QUALQUER `display` de autor tem mais peso — então o
+   corpo fechado continuava `display: flex` e cada seção recolhida deixava
+   ~14px de padding vazio na coluna. Com 5 fechadas, 70px de nada. Não dava pra
+   ver "errado", só parecia frouxo — que é como esse tipo de bug sobrevive. */
+.insp-sec-body[hidden] {
+  display: none;
+}
 
 /* Texto só pra leitor de tela: some da vista sem sair da árvore de
    acessibilidade. `display:none` e `visibility:hidden` NÃO servem — os dois
