@@ -1,4 +1,4 @@
-# Baixa o ffmpeg (Windows x64, build GPL completo do BtbN) e instala
+﻿# Baixa o ffmpeg (Windows x64, build GPL completo do BtbN) e instala
 # ffmpeg.exe + ffprobe.exe em src-tauri/binaries/ffmpeg.
 # Build GPL de propósito: mais codecs/filtros, e copyleft não é problema na
 # suíte (decisão 2026-07-13) — o binário roda como processo separado.
@@ -40,7 +40,10 @@ $root = Split-Path -Parent $PSScriptRoot
 $ffDir = Join-Path $root "src-tauri\binaries\ffmpeg"
 New-Item -ItemType Directory -Force -Path $ffDir | Out-Null
 
-if ((Test-Path (Join-Path $ffDir "ffmpeg.exe")) -and (Test-Path (Join-Path $ffDir "ffprobe.exe"))) {
+# O guarda inclui LICENSE-ffmpeg.txt de propósito: quem já tinha os binários de
+# antes da conformidade de licença (2026-07-20) precisa refazer o passo, senão o
+# instalador sai sem o texto da GPL que a redistribuição exige.
+if ((Test-Path (Join-Path $ffDir "ffmpeg.exe")) -and (Test-Path (Join-Path $ffDir "ffprobe.exe")) -and (Test-Path (Join-Path $ffDir "LICENSE-ffmpeg.txt"))) {
     Write-Host "ffmpeg já existe em $ffDir"
     exit 0
 }
@@ -68,5 +71,58 @@ foreach ($bin in "ffmpeg.exe", "ffprobe.exe") {
     if (-not $hit) { throw "$bin não encontrado dentro do zip" }
     Copy-Item $hit.FullName -Destination (Join-Path $ffDir $bin) -Force
 }
+
+# ---------------------------------------------------------------------------
+# CONFORMIDADE DE LICENÇA (2026-07-20)
+#
+# O ffmpeg é GPL-3.0-or-later e vai DENTRO do nosso instalador. Isso não
+# contamina o código do app (ele roda como processo separado, invocado por linha
+# de comando — é agregação, não linkagem), mas a redistribuição do binário
+# obriga a acompanhar o texto da licença e a oferta de código-fonte.
+#
+# O zip já traz o LICENSE.txt; copiamos ele em vez de versionar uma cópia nossa,
+# pra o texto que sai no instalador ser exatamente o que veio com o binário. Os
+# dois arquivos caem em binaries/ffmpeg/, que o
+# `"resources": ["binaries/ffmpeg/*"]` do tauri.conf.json já empacota.
+# ---------------------------------------------------------------------------
+$lic = Get-ChildItem -Path $extract -Recurse -Filter "LICENSE.txt" | Select-Object -First 1
+if (-not $lic) { throw "LICENSE.txt não encontrado dentro do zip — não é possível redistribuir o ffmpeg sem ele" }
+Copy-Item $lic.FullName -Destination (Join-Path $ffDir "LICENSE-ffmpeg.txt") -Force
+
+$fonte = @"
+FFmpeg — binário de terceiro redistribuído com o LocalRecord
+============================================================
+
+O ffmpeg/ffprobe que acompanha este instalador é uma build NÃO MODIFICADA de
+terceiro, licenciada sob a GNU General Public License versão 3 ou posterior
+(build "-gpl" do BtbN, configurada com --enable-gpl --enable-version3). O texto
+completo da licença está em LICENSE-ffmpeg.txt, nesta mesma pasta.
+
+O ffmpeg roda como PROCESSO SEPARADO, invocado por linha de comando. O código do
+LocalRecord não faz linkagem com as bibliotecas do FFmpeg: as duas obras são
+apenas agregadas no mesmo instalador e cada uma mantém a sua licença — o
+LocalRecord é MIT, o FFmpeg é GPL-3.0-or-later.
+
+Procedência exata desta cópia
+-----------------------------
+  build ............. $ffAsset
+  tag do upstream ... $ffUpstreamTag
+  sha256 ............ $ffSha256
+  espelho ........... https://github.com/Anon5T4R/Local-runtimes (release v1)
+  receita de build .. https://github.com/BtbN/FFmpeg-Builds
+  fonte do FFmpeg ... https://github.com/FFmpeg/FFmpeg
+
+Oferta de código-fonte (GPL-3.0, seção 6)
+-----------------------------------------
+O código-fonte correspondente a esta build está publicamente disponível nos
+endereços acima. O commit exato do FFmpeg está no próprio nome do arquivo da
+build: "n8.1.2-21-gce3c09c101" = tag n8.1.2, 21 commits à frente, commit
+ce3c09c101. A receita de compilação é a do repositório BtbN/FFmpeg-Builds.
+
+Se preferir receber o código-fonte por outro meio, abra uma issue em
+https://github.com/Anon5T4R/LocalRecord e ele será fornecido.
+"@
+Set-Content -Path (Join-Path $ffDir "FONTE-FFMPEG.txt") -Value $fonte -Encoding UTF8
+
 Remove-Item $extract -Recurse -Force
-Write-Host "Instalado em $ffDir"
+Write-Host "Instalado em $ffDir (+ LICENSE-ffmpeg.txt e FONTE-FFMPEG.txt)"
