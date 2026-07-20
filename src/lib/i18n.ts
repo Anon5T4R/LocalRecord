@@ -19,6 +19,11 @@ const pt = {
   "warn.noFfmpeg":
     "Runtime de mídia ausente — sem o ffmpeg o LocalRecord não grava. Rode scripts/fetch-ffmpeg (o instalador já traz).",
 
+  /* Texto do ponto "em uso" num card recolhido — o ponto sozinho é invisível
+     pra leitor de tela, e é justamente a informação que o padrão B9 existe pra
+     NÃO esconder. */
+  "sec.inUse": "em uso",
+
   "sources.title": "Fontes",
   "sources.screen": "Tela",
   "sources.camera": "Câmera",
@@ -42,6 +47,8 @@ const pt = {
   "preview.hintNoCam": "Escolha uma câmera pra sobrepor no canto da tela.",
   "preview.noShot": "Sem prévia da tela",
   "preview.camFailed": "Não deu pra abrir a câmera na prévia: {error}",
+  "preview.camTitle": "Câmera",
+  "annot.on": "armada",
   "preview.camSize": "Tamanho da câmera",
   "preview.camOpacity": "Opacidade da câmera",
   "preview.camBg": "Fundo da câmera",
@@ -143,6 +150,8 @@ const en: Record<MessageKey, string> = {
   "warn.noFfmpeg":
     "Media runtime missing — without ffmpeg, LocalRecord can't record. Run scripts/fetch-ffmpeg (the installer ships with it).",
 
+  "sec.inUse": "in use",
+
   "sources.title": "Sources",
   "sources.screen": "Screen",
   "sources.camera": "Camera",
@@ -166,6 +175,8 @@ const en: Record<MessageKey, string> = {
   "preview.hintNoCam": "Pick a camera to overlay in the corner of the screen.",
   "preview.noShot": "No screen preview",
   "preview.camFailed": "Couldn't open the camera in the preview: {error}",
+  "preview.camTitle": "Camera",
+  "annot.on": "armed",
   "preview.camSize": "Camera size",
   "preview.camOpacity": "Camera opacity",
   "preview.camBg": "Camera background",
@@ -265,6 +276,8 @@ const es: Record<MessageKey, string> = {
   "warn.noFfmpeg":
     "Falta el runtime de medios — sin ffmpeg, LocalRecord no graba. Ejecuta scripts/fetch-ffmpeg (el instalador ya lo incluye).",
 
+  "sec.inUse": "en uso",
+
   "sources.title": "Fuentes",
   "sources.screen": "Pantalla",
   "sources.camera": "Cámara",
@@ -288,6 +301,8 @@ const es: Record<MessageKey, string> = {
   "preview.hintNoCam": "Elige una cámara para superponer en la esquina de la pantalla.",
   "preview.noShot": "Sin vista previa de la pantalla",
   "preview.camFailed": "No se pudo abrir la cámara en la vista previa: {error}",
+  "preview.camTitle": "Cámara",
+  "annot.on": "armada",
   "preview.camSize": "Tamaño de la cámara",
   "preview.camOpacity": "Opacidad de la cámara",
   "preview.camBg": "Fondo de la cámara",

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import AudioMeter from "./components/AudioMeter";
+import { CardSection } from "./components/CardSection";
 import Preview from "./components/Preview";
 import SettingsModal from "./components/SettingsModal";
 import Toasts from "./components/Toasts";
@@ -30,6 +31,7 @@ import {
 } from "./lib/sources";
 import {
   labelsFor,
+  DEFAULT_SETUP,
   FPS_OPTIONS,
   loadSetup,
   OPACITY_MAX,
@@ -672,9 +674,12 @@ export default function App() {
 
       <div className="grid">
         <div className="col">
-          <div className="card">
-            <div className="card-head">
-              <strong>{t("sources.title")}</strong>
+          {/* Fontes nasce SEMPRE aberta: é o miolo da tarefa — o que vai ser
+              gravado. O B9 é explícito em não colapsar o miolo. Recolher fica
+              disponível pra DEPOIS de configurar (e é o maior ganho de rolagem
+              do app), mas nunca como estado inicial. */}
+          <CardSection id="sources" title={t("sources.title")} active>
+            <div className="source-row">
               <button className="small" onClick={() => void load()} disabled={loading || !isTauri || busy}>
                 {t("sources.refresh")}
               </button>
@@ -813,15 +818,18 @@ export default function App() {
                 {devices.screens.length === 0 && <p className="muted small">{t("sources.empty")}</p>}
               </>
             )}
-          </div>
+          </CardSection>
 
-          <div className="card">
-            <div className="card-head">
-              <strong>{t("out.title")}</strong>
-              <span className="muted small">
-                {t("out.encoder")}: {encoder || t("out.encoderProbing")}
-              </span>
-            </div>
+          {/* Saída também nasce aberta: ONDE o arquivo vai parar é informação
+              que o usuário precisa ver pra saber o que está acontecendo, não
+              um ajuste avançado. O encoder virou `summary` e por isso continua
+              legível com o card fechado — antes ele sumia junto. */}
+          <CardSection
+            id="out"
+            title={t("out.title")}
+            active
+            summary={`${t("out.encoder")}: ${encoder || t("out.encoderProbing")}`}
+          >
             <div className="source-row">
               <span className="muted">{t("out.folder")}</span>
               <input value={outDir} onChange={(e) => setOutDir(e.target.value)} disabled={busy} />
@@ -831,19 +839,26 @@ export default function App() {
               <input value={pattern} onChange={(e) => setPattern(e.target.value)} disabled={busy} />
             </div>
             <p className="muted small">{t("out.patternHint")}</p>
-          </div>
+          </CardSection>
 
           {/* O pilar. Fica ao lado da saída e NÃO é travado por `busy`: armar
               ou desarmar o overlay no meio da gravação é caso de uso, não
               acidente — o professor decide na hora que precisa riscar algo. */}
-          <div className="card">
-            <div className="card-head">
-              <strong>{t("annot.title")}</strong>
-              <span className={`annot-led${annot.pen ? " on" : ""}`} />
-            </div>
+          {/* ARMADA nasce aberta, desarmada nasce fechada — é o caso de livro
+              do B9. Com o overlay armado, uma tecla do teclado passa a riscar a
+              tela: esconder isso é esconder o motivo de o app "fazer algo
+              estranho". Desarmada, o card não explica nada e pode ficar fora do
+              caminho. Fechado, o ponto "em uso" continua denunciando. */}
+          <CardSection
+            id="annot"
+            title={t("annot.title")}
+            active={annot.armed}
+            summary={annot.armed ? t("annot.on") : undefined}
+          >
             <label className="check">
               <input type="checkbox" checked={annot.armed} onChange={(e) => void arm(e.target.checked)} />
               <span>{t("annot.arm")}</span>
+              <span className={`annot-led${annot.pen ? " on" : ""}`} />
             </label>
             <p className="muted small">
               {annot.armed ? t("annot.armed", { pen: SC_PEN }) : t("annot.disarmed")}
@@ -854,7 +869,7 @@ export default function App() {
                 <p className="muted small">{t("annot.burnedIn")}</p>
               </>
             )}
-          </div>
+          </CardSection>
         </div>
 
         <div className="col">
@@ -868,7 +883,20 @@ export default function App() {
             disabled={busy}
           />
           {camera && (
-            <div className="card">
+            <CardSection
+              id="camera"
+              title={t("preview.camTitle")}
+              /* Fora do neutro = a câmera está com tamanho/opacidade fora do
+                 padrão ou com fundo virtual ligado. O fundo virtual é o que
+                 mais importa aqui: ele SOBE um modelo e gasta ~14 ms de um
+                 núcleo por quadro — quem abre o app e vê a câmera estranha
+                 precisa achar o interruptor sem caçar. */
+              active={
+                sizePct !== DEFAULT_SETUP.sizePct ||
+                camOpacity !== DEFAULT_SETUP.camOpacity ||
+                camBg !== DEFAULT_SETUP.camBg
+              }
+            >
               <div className="size-row">
                 <span className="muted">{t("preview.camSize")}</span>
                 <input
@@ -931,12 +959,18 @@ export default function App() {
                   )}
                 </div>
               )}
-            </div>
+            </CardSection>
           )}
 
           {/* Fica FORA do bloco da câmera: o alvo vale pra gravação inteira,
-              com câmera ou sem. */}
-          <div className="card">
+              com câmera ou sem. Nasce aberto só quando o alvo NÃO é o padrão —
+              e aí o `summary` mostra o valor sem precisar abrir. */}
+          <CardSection
+            id="fps"
+            title={t("rec.fpsTarget")}
+            active={fps !== DEFAULT_SETUP.fps}
+            summary={`${fps} fps`}
+          >
             <div className="size-row">
               <span className="muted">{t("rec.fpsTarget")}</span>
               <select
@@ -952,7 +986,7 @@ export default function App() {
               </select>
             </div>
             <p className="muted small">{t("rec.fpsTargetHint")}</p>
-          </div>
+          </CardSection>
         </div>
       </div>
 
