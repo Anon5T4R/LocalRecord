@@ -93,6 +93,7 @@ jobs:
         run: cargo fetch --locked
 
       - name: Build Tauri app
+        id: build
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -121,3 +122,66 @@ jobs:
           prerelease: false
           includeUpdaterJson: false
           args: --bundles ${{ matrix.bundles }}
+
+      # O upload do tauri-action nao tem retentativa: ele builda e publica no
+      # MESMO passo, entao um tropeco momentaneo do GitHub joga fora 15 min de
+      # build e deixa a release pela metade (aconteceu em 2026-07-19, com
+      # "Error creating policy" em 5 apps de uma vez, durante um incidente do
+      # Actions - os binarios estavam prontos, so o upload caiu).
+      #
+      # Este passo so roda quando o de cima falha, e reaproveita o que JA foi
+      # compilado: nada e rebuildado.
+      - name: Publicar artefato (retentativa)
+        if: failure() && startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          arq=$(ls src-tauri/target/release/bundle/nsis/*-setup.exe \
+                   src-tauri/target/release/bundle/appimage/*.AppImage 2>/dev/null | head -1)
+          if [ -z "$arq" ]; then
+            echo "::error::sem artefato - a falha foi no BUILD, nao no upload"
+            exit 1
+          fi
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" \
+                 --title "${{ github.event.repository.name }} $GITHUB_REF_NAME" \
+                 --notes "Instaladores anexados abaixo."
+          for t in 1 2 3 4 5; do
+            if gh release upload "$GITHUB_REF_NAME" "$arq" --clobber; then
+              echo "publicado na tentativa $t"
+              exit 0
+            fi
+            echo "tentativa $t falhou; esperando $((t * 20))s"
+            sleep $((t * 20))
+          done
+          echo "::error::upload falhou 5 vezes seguidas"
+          exit 1
+
+  # Uma release com metade dos instaladores PARECE completa pra quem baixa -
+  # foi assim que Calc e Monitor ficaram so com o .exe e o Clip so com o
+  # AppImage, sem nada gritando. Este job existe pra que isso nunca passe
+  # calado: ou os dois estao la, ou o release fica vermelho.
+  verificar:
+    needs: build
+    if: always() && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Os 2 instaladores estao na release?
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          nomes=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+                    --json assets -q '.assets[].name' 2>/dev/null)
+          echo "Anexos na release:"
+          echo "${nomes:-(nenhum)}"
+          falta=0
+          echo "$nomes" | grep -q -- '-setup\.exe$' \
+            || { echo "::error::falta o instalador do Windows"; falta=1; }
+          echo "$nomes" | grep -q -- '\.AppImage$' \
+            || { echo "::error::falta o AppImage"; falta=1; }
+          exit $falta
