@@ -195,11 +195,15 @@ jobs:
           EOF
           sed -i "s/__TAG__/$TAG/g" notas.md
 
+          # `--repo` explícito: este job não faz checkout, então não há
+          # repositório git pra o gh inferir — sem isso ele morre com "not a
+          # git repository", que parece erro de permissão e manda investigar
+          # o token.
           publicar() {
-            if gh release view "$TAG" >/dev/null 2>&1; then
-              gh release upload "$TAG" dist/* --clobber
+            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
             else
-              gh release create "$TAG" dist/* \
+              gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
                 --title "LocalRecord $TAG" --notes-file notas.md
             fi
           }
