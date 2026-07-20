@@ -8,17 +8,17 @@ on:
   # Sem isto, a unica forma de validar uma mudanca de build e cortando release.
   workflow_dispatch:
 
+# Duas tags empurradas em sequência não disputam a mesma release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     permissions:
-      contents: write
+      contents: read
     strategy:
       fail-fast: false
-      # Serializa os jobs: os dois tentavam CRIAR o release na mesma tag ao mesmo
-      # tempo e um perdia a corrida (already_exists) sem subir o artefato - mordeu
-      # o LocalData v0.7.0 e o LocalAgenda v0.5.0. Com um job por vez, o primeiro
-      # cria e o segundo anexa. Release ~2x mais lento, mas release nao e hot-path.
-      max-parallel: 1
       matrix:
         include:
           - platform: windows-latest
@@ -29,6 +29,7 @@ jobs:
             bundles: appimage
 
     runs-on: ${{ matrix.platform }}
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v5
@@ -92,85 +93,131 @@ jobs:
         working-directory: src-tauri
         run: cargo fetch --locked
 
+      # `tagName` vazio = o tauri-action compila e NÃO publica. O token segue
+      # no ambiente porque a action o lê na inicialização, antes de decidir se
+      # vai publicar — sem ele o passo pode morrer sem nem começar o build.
       - name: Build Tauri app
-        id: build
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          # So preenche em build de TAG. Fora de tag, github.ref_name e o nome do
-          # BRANCH -- um disparo manual da main criaria uma release chamada "main".
-          # O gate vai na tagName e NAO no passo: o tauri-action e quem CONSTROI o
-          # app. Sem tagName ele so builda e sobe artefatos, que e o que queremos.
-          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
-          releaseName: "LocalRecord ${{ github.ref_name }}"
-          releaseBody: |
-            ## LocalRecord ${{ github.ref_name }}
-
-            Estúdio de captura de tela 100% offline da suíte Local (ffmpeg embutido):
-            grave a tela com a câmera sobreposta no canto e o microfone, e **anote
-            AO VIVO** por cima — a plateia presencial vê a caneta na hora e a
-            anotação já entra no vídeo. Gravação em MKV (recuperável) com remux
-            pra MP4 no fim. Sem live, sem nuvem, sem conta.
-
-            ### Downloads
-            - **Windows — Instalador:** `*-setup.exe`
-            - **Linux — AppImage:** `*.AppImage` (dê permissão de execução e rode)
-
-            > O ffmpeg (build GPL) vai embutido no instalador — nada pra configurar.
-          releaseDraft: false
-          prerelease: false
+          tagName: ""
           includeUpdaterJson: false
           args: --bundles ${{ matrix.bundles }}
 
-      # O upload do tauri-action nao tem retentativa: ele builda e publica no
-      # MESMO passo, entao um tropeco momentaneo do GitHub joga fora 15 min de
-      # build e deixa a release pela metade (aconteceu em 2026-07-19, com
-      # "Error creating policy" em 5 apps de uma vez, durante um incidente do
-      # Actions - os binarios estavam prontos, so o upload caiu).
-      #
-      # Este passo so roda quando o de cima falha, e reaproveita o que JA foi
-      # compilado: nada e rebuildado.
-      - name: Publicar artefato (retentativa)
-        if: failure() && startsWith(github.ref, 'refs/tags/')
+      # Junta o que saiu num lugar só. Se o instalador não estiver aqui, o
+      # release para AGORA, com a mensagem certa — e não daqui a 15 minutos
+      # com "falha no upload", que mandaria investigar o lugar errado.
+      - name: Separar o instalador
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist-release
+          encontrou=0
+          for p in src-tauri/target/release/bundle/nsis/*-setup.exe \
+                   src-tauri/target/release/bundle/appimage/*.AppImage; do
+            [ -e "$p" ] || continue
+            cp "$p" dist-release/
+            echo "empacotado: $(basename "$p") ($(du -h "$p" | cut -f1))"
+            encontrou=1
+          done
+          if [ "$encontrou" -eq 0 ]; then
+            echo "::error::o build terminou sem instalador em ${{ matrix.bundles }}"
+            exit 1
+          fi
+
+      - name: Guardar o instalador
+        uses: actions/upload-artifact@v4
+        with:
+          name: instalador-${{ matrix.bundles }}
+          path: dist-release/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # PUBLICA UMA VEZ SÓ, com tudo na mão.
+  #
+  # `needs` sem `if: always()` é de propósito: se qualquer plataforma falhou, é
+  # melhor NÃO ter release nenhuma do que ter uma pela metade — o usuário que só
+  # vê o .exe não tem como saber que faltou o AppImage.
+  #
+  # E como este job não compila nada, repetir uma publicação que falhou custa
+  # segundos em vez de meia hora.
+  # ---------------------------------------------------------------------------
+  publicar:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Baixar os instaladores
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Conferir ANTES de criar a release
+        shell: bash
+        run: |
+          set -uo pipefail
+          ls -lh dist/
+          falta=0
+          ls dist/*-setup.exe >/dev/null 2>&1 \
+            || { echo "::error::falta o instalador do Windows"; falta=1; }
+          ls dist/*.AppImage >/dev/null 2>&1 \
+            || { echo "::error::falta o AppImage"; falta=1; }
+          exit $falta
+
+      - name: Publicar (com retentativa)
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
         run: |
           set -uo pipefail
-          arq=$(ls src-tauri/target/release/bundle/nsis/*-setup.exe \
-                   src-tauri/target/release/bundle/appimage/*.AppImage 2>/dev/null | head -1)
-          if [ -z "$arq" ]; then
-            echo "::error::sem artefato - a falha foi no BUILD, nao no upload"
-            exit 1
-          fi
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
-            || gh release create "$GITHUB_REF_NAME" \
-                 --title "${{ github.event.repository.name }} $GITHUB_REF_NAME" \
-                 --notes "Instaladores anexados abaixo."
+          cat > notas.md <<'EOF'
+          ## LocalRecord __TAG__
+
+          Estúdio de captura de tela 100% offline da suíte Local (ffmpeg embutido):
+          grave a tela com a câmera sobreposta no canto e o microfone, e **anote
+          AO VIVO** por cima — a plateia presencial vê a caneta na hora e a
+          anotação já entra no vídeo. Gravação em MKV (recuperável) com remux
+          pra MP4 no fim. Sem live, sem nuvem, sem conta.
+
+          ### Downloads
+          - **Windows — Instalador:** `*-setup.exe`
+          - **Linux — AppImage:** `*.AppImage` (dê permissão de execução e rode)
+
+          > O ffmpeg (build GPL) vai embutido no instalador — nada pra configurar.
+          EOF
+          sed -i "s/__TAG__/$TAG/g" notas.md
+
+          publicar() {
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              gh release upload "$TAG" dist/* --clobber
+            else
+              gh release create "$TAG" dist/* \
+                --title "LocalRecord $TAG" --notes-file notas.md
+            fi
+          }
+
           for t in 1 2 3 4 5; do
-            if gh release upload "$GITHUB_REF_NAME" "$arq" --clobber; then
+            if publicar; then
               echo "publicado na tentativa $t"
               exit 0
             fi
             echo "tentativa $t falhou; esperando $((t * 20))s"
             sleep $((t * 20))
           done
-          echo "::error::upload falhou 5 vezes seguidas"
+          echo "::error::a publicação falhou 5 vezes seguidas"
           exit 1
 
-  # Uma release com metade dos instaladores PARECE completa pra quem baixa -
-  # foi assim que Calc e Monitor ficaram so com o .exe e o Clip so com o
-  # AppImage, sem nada gritando. Este job existe pra que isso nunca passe
-  # calado: ou os dois estao la, ou o release fica vermelho.
-  verificar:
-    needs: build
-    if: always() && startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Os 2 instaladores estao na release?
+      # Rede de segurança: confirma no servidor o que achamos ter subido.
+      - name: Conferir a release publicada
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -181,7 +228,7 @@ jobs:
           echo "${nomes:-(nenhum)}"
           falta=0
           echo "$nomes" | grep -q -- '-setup\.exe$' \
-            || { echo "::error::falta o instalador do Windows"; falta=1; }
+            || { echo "::error::o .exe não chegou na release"; falta=1; }
           echo "$nomes" | grep -q -- '\.AppImage$' \
-            || { echo "::error::falta o AppImage"; falta=1; }
+            || { echo "::error::o AppImage não chegou na release"; falta=1; }
           exit $falta
