@@ -1,0 +1,37 @@
+Modelos de terceiros distribuídos com o LocalRecord
+==================================================
+
+O LocalRecord é software livre sob a licença MIT (veja o LICENSE na raiz do
+repositório). Além do ffmpeg — cuja licença e oferta de fonte vão em
+binaries/ffmpeg/ (LICENSE-ffmpeg.txt e FONTE-FFMPEG.txt) — o instalador
+acompanha o modelo abaixo, em versão NÃO MODIFICADA.
+
+⚠️ Nota de forma: o modelo NÃO é arquivo solto no instalador. Ele entra em
+public/models, o Vite o empacota no dist e o dist é compilado DENTRO do
+executável do app. Por isso um `7z l` no instalador não o mostra — mas continua
+sendo redistribuição, e a obrigação de licença é a mesma.
+
+
+1) MediaPipe Selfie Segmentation — Apache-2.0
+---------------------------------------------
+Modelo de segmentação usado no fundo de câmera (nenhum / desfoque / imagem).
+
+  arquivo ........... mediapipe-selfie-segmentation.onnx
+  fonte ............. https://github.com/google-ai-edge/mediapipe
+  espelho ........... https://github.com/Anon5T4R/Local-runtimes (release v1)
+  sha256 ............ 3241ac4ad8aa35bdaf33946776db29f7c283a413aa0b0dacb9483594b4531aad
+
+  Texto da licença .. LICENSE-mediapipe-Apache-2.0.txt
+
+  A Apache-2.0 exige repassar a licença e, quando o projeto publica um arquivo
+  NOTICE, também o NOTICE. O MediaPipe não publica NOTICE na raiz do
+  repositório (conferido em 2026-07-20 — retorna 404), então o texto da licença
+  basta.
+
+
+Por que este texto é VERSIONADO aqui
+-------------------------------------
+O .onnx é um arquivo de dados: não traz licença dentro, e não há o que extrair
+do download. Diferente do ffmpeg do BtbN, onde o LICENSE.txt vem no próprio zip
+e por isso é copiado de lá em vez de mantido como cópia nossa. Aqui a cópia
+fica no repositório e o glob "third-party/*" do tauri.conf.json a empacota.
