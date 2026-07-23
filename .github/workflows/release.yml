@@ -127,7 +127,7 @@ jobs:
           fi
 
       - name: Guardar o instalador
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: instalador-${{ matrix.bundles }}
           path: dist-release/*
@@ -154,7 +154,7 @@ jobs:
 
     steps:
       - name: Baixar os instaladores
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
