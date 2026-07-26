@@ -28,32 +28,25 @@ use sysaudio::{MicAudioState, MonitorState, SysAudioState};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Linux: o webkit2gtk pinta a janela INTEIRA de branco em várias combinações
-    // de driver/compositor — o app sobe, o processo vive, e não há erro pra ler.
-    // (Visto num Arch com GNOME/Wayland; o LocalAI já tinha pago o mesmo pedágio.)
-    // Como o WebView é o mesmo em toda a suíte, este bloco é IDÊNTICO nos 31 apps.
-    // Desliga o renderer DMABUF (suspeito nº 1), o compositing (reforço) e, em
-    // Wayland, força XWayland — em AppImage o branco costuma sobreviver aos dois
-    // primeiros. Custa aceleração no WebView, e branco é pior que lento.
-    // Variável já setada MANDA (inclusive `=0`): quem depurou o próprio sistema
-    // não pode ser sobrescrito por nós. Tem que vir ANTES do GTK subir — o
-    // webkitgtk lê estas variáveis uma vez só, no arranque.
-    #[cfg(target_os = "linux")]
-    {
-        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
-            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-        }
-        if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
-            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
-        }
-        let on_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some()
-            || std::env::var("XDG_SESSION_TYPE")
-                .map(|t| t.eq_ignore_ascii_case("wayland"))
-                .unwrap_or(false);
-        if on_wayland && std::env::var_os("GDK_BACKEND").is_none() {
-            std::env::set_var("GDK_BACKEND", "x11");
-        }
-    }
+    // ── Contorno da tela branca do webkit: REMOVIDO, e o porquê importa ──────
+    //
+    // Este bloco desligava o renderer DMABUF, desligava o compositing e forçava
+    // XWayland, porque o webkit2gtk pintava a janela inteira de branco em
+    // Arch/GNOME. Era mitigação às cegas — o comentário dizia "branco é pior que
+    // lento" — e custava a aceleração do WebView.
+    //
+    // A CAUSA foi encontrada em 26/07/2026 e é de EMPACOTAMENTO, não de código:
+    // o AppDir do AppImage levava `libwayland-*` do Ubuntu do CI, que brigavam
+    // com o Mesa do host e derrubavam o EGL (`EGL_BAD_PARAMETER`). Corrigido em
+    // `Anon5T4R/linux-packaging`: as libs que falam com driver/compositor agora
+    // vêm do host, e o pacote nativo (pacman/apt) usa o webkit do sistema.
+    // Tratar o sintoma deixou de fazer sentido.
+    //
+    // Remover o forçamento NÃO tira a saída de emergência: estas variáveis são
+    // lidas pelo próprio webkitgtk, não por este código. Se a tela branca voltar
+    // em alguma combinação de driver, rodar com
+    // `WEBKIT_DISABLE_DMABUF_RENDERER=1` continua funcionando — e aí é sinal de
+    // que sobrou lib de host em algum AppDir, que é onde se deve olhar.
 
     let mut builder = tauri::Builder::default();
 
