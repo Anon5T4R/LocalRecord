@@ -26,7 +26,7 @@ jobs:
             bundles: nsis
           - platform: ubuntu-22.04
             rust-target: x86_64-unknown-linux-gnu
-            bundles: appimage
+            bundles: appimage,deb
 
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
@@ -110,10 +110,21 @@ jobs:
       # que o CI nunca ve, porque o CI e justamente a distro onde funciona.
       # Ver Anon5T4R/linux-packaging.
       - name: Consertar o AppImage para outras distros
-        if: contains(matrix.bundles, 'appimage')
+        if: runner.os == 'Linux'
         uses: Anon5T4R/linux-packaging/fix-appimage@v1
         with:
           path: src-tauri/target/release/bundle/appimage
+
+      # Pacote nativo do pacman, reempacotado do .deb. O binario passa a usar
+      # o webkit2gtk/GTK DO SISTEMA em vez de carregar os do runner — que e a
+      # classe de bug que o AppImage tem por construcao. O Hub prefere este
+      # asset ao AppImage quando a maquina tem pacman.
+      - name: Empacotar para o Arch (.pkg.tar.zst)
+        if: runner.os == 'Linux'
+        uses: Anon5T4R/linux-packaging/arch-package@v1
+        with:
+          license: MIT
+          description: 'Estudio de captura de tela tipo OBS, 100% offline, com anotacao ao vivo'
 
       # Junta o que saiu num lugar só. Se o instalador não estiver aqui, o
       # release para AGORA, com a mensagem certa — e não daqui a 15 minutos
@@ -125,7 +136,9 @@ jobs:
           mkdir -p dist-release
           encontrou=0
           for p in src-tauri/target/release/bundle/nsis/*-setup.exe \
-                   src-tauri/target/release/bundle/appimage/*.AppImage; do
+                   src-tauri/target/release/bundle/deb/*.deb \
+                   src-tauri/target/release/bundle/appimage/*.AppImage \
+                   dist-arch/*.pkg.tar.zst; do
             [ -e "$p" ] || continue
             cp "$p" dist-release/
             echo "empacotado: $(basename "$p") ($(du -h "$p" | cut -f1))"
