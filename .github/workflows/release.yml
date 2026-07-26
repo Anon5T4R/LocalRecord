@@ -104,6 +104,16 @@ jobs:
           tagName: ""
           includeUpdaterJson: false
           args: --bundles ${{ matrix.bundles }}
+      # O AppImage sai do runner carregando libs do Ubuntu que precisam vir do
+      # HOST (libwayland/GL) e um runtime que pede libfuse.so.2. Em Arch/Fedora
+      # isso vira janela BRANCA (EGL_BAD_PARAMETER) ou app que nao abre — bugs
+      # que o CI nunca ve, porque o CI e justamente a distro onde funciona.
+      # Ver Anon5T4R/linux-packaging.
+      - name: Consertar o AppImage para outras distros
+        if: contains(matrix.bundles, 'appimage')
+        uses: Anon5T4R/linux-packaging/fix-appimage@v1
+        with:
+          path: src-tauri/target/release/bundle/appimage
 
       # Junta o que saiu num lugar só. Se o instalador não estiver aqui, o
       # release para AGORA, com a mensagem certa — e não daqui a 15 minutos
