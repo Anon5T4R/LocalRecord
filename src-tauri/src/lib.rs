@@ -99,6 +99,18 @@ pub fn run() {
             annot::annot_focus
         ])
         .on_window_event(|win, event| {
+            // Bug do tao ≤ 0.35 no GNOME/Wayland: botões da titlebar (min/max/
+            // fechar) mortos até um resize (tauri#13440, tauri#11856). O toggle
+            // de `resizable` em cada foco força o GTK a revalidar as decorações.
+            // A `annot` não entra: é undecorated. Remover quando o tauri puxar
+            // o tao 0.36 (via wry 0.56).
+            #[cfg(target_os = "linux")]
+            if let tauri::WindowEvent::Focused(true) = event {
+                if win.label() == "main" {
+                    let _ = win.set_resizable(false);
+                    let _ = win.set_resizable(true);
+                }
+            }
             // A `annot` existe desde o boot (escondida). Sem isto, fechar a
             // janela principal NÃO fecharia o app: o Tauri só sai quando a
             // última janela some, e sobraria um LocalRecord invisível vivo,
