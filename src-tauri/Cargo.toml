@@ -63,3 +63,8 @@ tauri-plugin-single-instance = "2"
 # limpa). Tem que ser GLOBAL: quando o usuário está anotando, o foco está no
 # app que ele demonstra — atalho de janela nunca chegaria aqui.
 tauri-plugin-global-shortcut = "2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# CSD limpa: contorna a titlebar quebrada do tao <= 0.35 no GNOME/Wayland
+# (ver lib.rs). Mesma versao que o tauri ja puxa. Sai junto com o upgrade ao tao 0.36.
+gtk = "0.18"

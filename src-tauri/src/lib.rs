@@ -26,7 +26,24 @@ use ffmpeg::FfState;
 use record::RecState;
 use sysaudio::{MicAudioState, MonitorState, SysAudioState};
 
+/// Contorna a titlebar quebrada do tao <= 0.35 no GNOME/Wayland (CSD propia
+/// com regiao de input morta — causa e fix em tao#1218, so via tauri 2.12):
+/// troca por uma HeaderBar comum com layout forcado min/max/fechar, ANTES do
+/// primeiro map. Sai junto com o upgrade ao tao 0.36 (wry 0.56).
+#[cfg(target_os = "linux")]
+fn instalar_csd_limpa(w: &tauri::WebviewWindow) {
+    use gtk::prelude::*;
+    let Ok(gw) = w.gtk_window() else { return };
+    let header = gtk::HeaderBar::new();
+    header.set_show_close_button(true);
+    header.set_decoration_layout(Some("menu:minimize,maximize,close"));
+    header.set_title(Some("LocalRecord"));
+    header.show();
+    gw.set_titlebar(Some(&header));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+
 pub fn run() {
     // ── Contorno da tela branca do webkit: REMOVIDO, e o porquê importa ──────
     //
@@ -48,7 +65,15 @@ pub fn run() {
     // `WEBKIT_DISABLE_DMABUF_RENDERER=1` continua funcionando — e aí é sinal de
     // que sobrou lib de host em algum AppDir, que é onde se deve olhar.
 
-    let mut builder = tauri::Builder::default();
+    let mut builder = tauri::Builder::default()
+        .setup(|app| {
+            // Titlebar limpa no GNOME/Wayland (tao <= 0.35) — ver lib.rs do LocalImage.
+            #[cfg(target_os = "linux")]
+            if let Some(w) = app.get_webview_window("main") {
+                instalar_csd_limpa(&w);
+            }
+            Ok(())
+        });
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
